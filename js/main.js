@@ -2,7 +2,7 @@ import { DDF } from "./iso8211.js";
 import { S57 } from "./s57.js";
 import { S52 } from "./s52.js";
 import { loadCatalog } from "./catalog.js";
-import { Renderer } from "./render.js?v=2";
+import { Renderer } from "./render.js?v=3";
 
 const ATLAS_BY_TABLE = {
   DAY_BRIGHT: "assets/rastersymbols-day.png",
@@ -24,7 +24,24 @@ const state = {
 const canvas = document.getElementById("chart");
 const statusEl = document.getElementById("status");
 const listEl = document.getElementById("celllist");
+const mapLoadingEl = document.getElementById("map-loading");
+
+function isMobileLayout() {
+  return window.matchMedia("(max-width: 768px)").matches;
+}
+
 function setStatus(t) { statusEl.textContent = t; }
+
+function setMapLoading(msg) {
+  if (!mapLoadingEl) return;
+  if (!msg) {
+    mapLoadingEl.hidden = true;
+    mapLoadingEl.textContent = "로딩 중…";
+  } else {
+    mapLoadingEl.hidden = false;
+    mapLoadingEl.textContent = msg;
+  }
+}
 
 function loadImage(src) {
   return new Promise((res, rej) => {
@@ -62,7 +79,18 @@ async function init() {
   state.renderer.vp.fit(state.globalBounds);
   state.fitted = true;
   draw();
-  setStatus(`준비 완료 — 셀 ${idx.length}개. 격자에서 셀을 클릭하거나 목록에서 선택해 표시하세요.`);
+
+  if (isMobileLayout()) {
+    setMapLoading(`ENC 전체 로드 (0/${idx.length})…`);
+    await loadMany(idx.map((g) => g.name));
+    state.renderer.vp.fit(state.globalBounds);
+    state.fitted = true;
+    resize();
+    draw();
+    setMapLoading("");
+  } else {
+    setStatus(`준비 완료 — 셀 ${idx.length}개. 기본 뷰에서 겹치는 셀을 곧 불러옵니다…`);
+  }
 }
 
 function globalBoundsOf(idx) {
@@ -165,9 +193,8 @@ document.getElementById("filter").addEventListener("input", (e) => {
   for (const [name, r] of rows) r.el.style.display = name.toUpperCase().includes(q) ? "" : "none";
 });
 
-// bulk actions
-document.getElementById("showVisible").addEventListener("click", async () => {
-  // enable every cell whose coverage intersects the current viewport
+/** 셀 커버리지가 현재 캔버스 뷰포트와 겹치는 셀 이름 목록 */
+function namesIntersectingViewport() {
   const vp = state.renderer.vp;
   const w = canvas.width, h = canvas.height;
   const targets = [];
@@ -177,7 +204,12 @@ document.getElementById("showVisible").addEventListener("click", async () => {
     if (Math.max(x0, x1) < 0 || Math.min(x0, x1) > w || Math.max(y0, y1) < 0 || Math.min(y0, y1) > h) continue;
     targets.push(g.name);
   }
-  await loadMany(targets);
+  return targets;
+}
+
+// bulk actions
+document.getElementById("showVisible").addEventListener("click", async () => {
+  await loadMany(namesIntersectingViewport());
 });
 document.getElementById("hideAll").addEventListener("click", () => {
   for (const c of state.renderer.cells.values()) c.visible = false;
@@ -190,17 +222,25 @@ document.getElementById("fitAll").addEventListener("click", () => {
 });
 
 async function loadMany(names) {
-  let i = 0;
-  for (const name of names) {
-    i++;
-    setStatus(`로딩 ${i}/${names.length}: ${name}`);
-    await ensureLoaded(name);
-    const cell = state.renderer.cells.get(name);
-    cell.visible = true; syncRow(name);
-    if (i % 3 === 0) draw(); // periodic repaint
+  const CONC = 4;
+  let done = 0;
+  const total = names.length;
+  for (let i = 0; i < names.length; i += CONC) {
+    const chunk = names.slice(i, i + CONC);
+    if (isMobileLayout()) setMapLoading(`ENC 전체 로드 (${done}/${total})…`);
+    setStatus(`로딩 ${Math.min(done + 1, total)}/${total}`);
+    await Promise.all(chunk.map((n) => ensureLoaded(n)));
+    for (const name of chunk) {
+      const cell = state.renderer.cells.get(name);
+      if (cell) { cell.visible = true; syncRow(name); }
+      done++;
+    }
+    if (done % 8 === 0 || done === total) draw();
   }
   draw();
-  setStatus(`표시 중 ${[...state.renderer.cells.values()].filter((c) => c.visible).length}개`);
+  const vis = [...state.renderer.cells.values()].filter((c) => c.visible).length;
+  setStatus(`표시 중 ${vis}개 / 전체 ${state.renderer.cells.size}개`);
+  setMapLoading("");
 }
 
 // ---- file open / drag&drop (adds a cell) ----
@@ -276,6 +316,33 @@ canvas.addEventListener("click", (e) => {
   const hit = pickCell(mx, my);
   if (hit) setCellVisible(hit, !state.renderer.cells.get(hit).visible, false);
 });
+
+// 터치 패닝 (모바일)
+let touchLast = null;
+canvas.addEventListener("touchstart", (e) => {
+  if (e.touches.length !== 1) { touchLast = null; return; }
+  touchLast = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+  dragging = true;
+  moved = false;
+}, { passive: true });
+canvas.addEventListener("touchmove", (e) => {
+  if (!touchLast || e.touches.length !== 1 || !state.renderer) return;
+  e.preventDefault();
+  const t = e.touches[0];
+  const dx = t.clientX - touchLast.x, dy = t.clientY - touchLast.y;
+  if (Math.abs(dx) + Math.abs(dy) > 2) moved = true;
+  const vp = state.renderer.vp;
+  vp.cx -= dx / vp.scale;
+  vp.cy += dy / vp.scale;
+  touchLast = { x: t.clientX, y: t.clientY };
+  draw();
+}, { passive: false });
+canvas.addEventListener("touchend", (e) => {
+  if (moved) e.preventDefault();
+  touchLast = null;
+  dragging = false;
+});
+canvas.addEventListener("touchcancel", () => { touchLast = null; dragging = false; });
 function pickCell(mx, my) {
   // smallest-area covering rectangle under the cursor (favours detailed cells)
   const vp = state.renderer.vp;
@@ -293,7 +360,8 @@ function pickCell(mx, my) {
 
 window.s52app = { state, loadFromUrl, setCellVisible, draw };
 
-init().then(() => {
+init().then(async () => {
   const cell = new URLSearchParams(location.search).get("cell");
-  if (cell) loadFromUrl(cell);
+  if (cell) await loadFromUrl(cell);
+  else if (!isMobileLayout()) await loadMany(namesIntersectingViewport());
 });

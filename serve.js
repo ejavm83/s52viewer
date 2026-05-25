@@ -1,6 +1,8 @@
 // Zero-dependency static file server for the S-52 viewer.
 // Usage:  node serve.js [port]
+// Binds 0.0.0.0 so other machines on the LAN can open http://<this-host-ip>:<port>/
 import http from "node:http";
+import os from "node:os";
 import { readFile } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -59,4 +61,21 @@ http
       res.end(data);
     });
   })
-  .listen(port, () => console.log(`S-52 viewer at http://localhost:${port}/`));
+  .listen(port, "0.0.0.0", () => {
+    console.log(`S-52 viewer (this machine): http://localhost:${port}/`);
+    const nets = os.networkInterfaces();
+    const addrs = [];
+    for (const list of Object.values(nets)) {
+      if (!list) continue;
+      for (const n of list) {
+        if (n.internal) continue;
+        if (n.family === "IPv4" || n.family === 4) addrs.push(n.address);
+      }
+    }
+    if (addrs.length) {
+      console.log("Same LAN / intranet — open in a browser:");
+      for (const a of addrs) console.log(`  http://${a}:${port}/`);
+    } else {
+      console.log("No non-loopback IPv4 found; use this host's IP manually.");
+    }
+  });

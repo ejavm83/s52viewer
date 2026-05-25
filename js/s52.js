@@ -211,13 +211,13 @@ class S52 {
     if (op === "TX") {
       let a = args[0] || "";
       if (a.startsWith("'")) return a.replace(/'/g, "");
-      const v = feat.attrs[a];
+      const v = attrValue(a, feat);
       return v === undefined ? "" : String(v);
     }
     // TE('%s', 'OBJNAM', ...)
     const fmt = (args[0] || "").replace(/'/g, "");
     const attr = (args[1] || "").replace(/'/g, "");
-    const v = feat.attrs[attr];
+    const v = attrValue(attr, feat);
     if (v === undefined) return "";
     return fmt.replace(/%[-0-9.]*l?[sdf]/g, String(v));
   }
@@ -235,6 +235,11 @@ class S52 {
     if (proc.startsWith("LIGHTS")) { return this._lights(feat, ops); }
     if (proc.startsWith("OBSTRN") || proc.startsWith("WRECKS") || proc.startsWith("UDWHAZ")) {
       ops.push({ op: "SY", sym: "DANGER01" }); return;
+    }
+    if (proc.startsWith("DATCVR")) {
+      // ENC coverage / data-extent outline (M_COVR, M_CSCL 등)
+      ops.push({ op: "LS", style: "SOLD", width: 1.25, color: this.color("CHBLK") });
+      return;
     }
     if (proc.startsWith("RESARE")) {
       ops.push({ op: "LS", style: "DASH", width: 2, color: this.color("CHMGD") });
@@ -282,6 +287,18 @@ function num(v) {
   if (v === undefined || v === null || v === "") return null;
   const n = parseFloat(v);
   return Number.isNaN(n) ? null : n;
+}
+
+// Prefer the national-language attribute (Korean NOBJNM/NINFOM) when present,
+// falling back to the romanized/English OBJNAM/INFORM.
+const NATIONAL_OF = { OBJNAM: "NOBJNM", INFORM: "NINFOM" };
+function attrValue(acronym, feat) {
+  const nat = NATIONAL_OF[acronym];
+  if (nat) {
+    const nv = feat.attrs[nat];
+    if (nv !== undefined && nv !== "") return nv;
+  }
+  return feat.attrs[acronym];
 }
 
 // Resolve an SY rotation argument: a literal number of degrees, or an S-57

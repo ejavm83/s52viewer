@@ -2,7 +2,7 @@ import { DDF } from "./iso8211.js";
 import { S57 } from "./s57.js";
 import { S52 } from "./s52.js";
 import { loadCatalog } from "./catalog.js";
-import { Renderer } from "./render.js?v=3";
+import { Renderer } from "./render.js?v=7";
 
 const ATLAS_BY_TABLE = {
   DAY_BRIGHT: "assets/rastersymbols-day.png",
@@ -221,6 +221,10 @@ function buildCellList(idx) {
     txt.textContent = g.name.replace(/\.000$/i, "");
     txt.title = `1:${g.cscl || "?"}  [${g.minX.toFixed(2)},${g.minY.toFixed(2)}]→[${g.maxX.toFixed(2)},${g.maxY.toFixed(2)}]`;
     row.append(cb, dot, txt);
+    row.addEventListener("click", () => {
+      state.renderer.gridFocusName = g.name;
+      draw();
+    });
     frag.appendChild(row);
     rows.set(g.name, { checkbox: cb, el: row });
   }
@@ -337,7 +341,11 @@ document.getElementById("text").addEventListener("change", (e) => { state.render
 document.getElementById("sound").addEventListener("change", (e) => { state.renderer.showSoundings = e.target.checked; draw(); });
 document.getElementById("scamin").addEventListener("change", (e) => { state.renderer.respectScamin = e.target.checked; draw(); });
 document.getElementById("declutter").addEventListener("change", (e) => { state.renderer.declutter = e.target.checked; draw(); });
-document.getElementById("grid").addEventListener("change", (e) => { state.renderer.showGrid = e.target.checked; draw(); });
+document.getElementById("grid").addEventListener("change", (e) => {
+  state.renderer.showGrid = e.target.checked;
+  if (e.target.checked) state.renderer.invalidateEncBoundaryResIfStale();
+  draw();
+});
 document.getElementById("scaledisp").addEventListener("change", (e) => { state.renderer.scaleDisplay = e.target.checked; draw(); });
 document.getElementById("depthunit").addEventListener("change", (e) => { state.renderer.depthUnit = e.target.value; draw(); });
 
@@ -351,7 +359,10 @@ canvas.addEventListener("mousedown", (e) => {
 window.addEventListener("mouseup", () => {
   if (!dragging) return;
   dragging = false;
-  if (moved) draw(); // final full-detail render at the settled position
+  if (moved) {
+    draw(); // final full-detail render at the settled position
+    if (isMobileLayout()) scheduleMobileViewportSync();
+  }
 });
 window.addEventListener("mousemove", (e) => {
   if (!dragging) return;
@@ -367,13 +378,74 @@ canvas.addEventListener("wheel", (e) => {
   state.renderer.vp.scale *= e.deltaY < 0 ? 1.15 : 1 / 1.15;
   draw();
 }, { passive: false });
+
+const ZOOM_KEY_FACTOR = 1.15;
+const PAN_STEP_PX = 64;
+
+/** 문자 입력 중인 폼 요소에만 포커스가 있을 때 맵 단축키 무시 (파일·체크박스 등은 제외) */
+function keyboardTargetIgnoresMapKeys(el) {
+  if (!el || el === document.body) return false;
+  if (el.isContentEditable) return true;
+  const tag = el.tagName;
+  if (tag === "TEXTAREA" || tag === "SELECT") return true;
+  if (tag === "INPUT") {
+    const t = (el.type || "text").toLowerCase();
+    if (["text", "search", "url", "tel", "email", "password", "number"].includes(t)) return true;
+  }
+  return false;
+}
+
+function isZoomInKey(e) {
+  const c = e.code;
+  return c === "Equal" || c === "NumpadAdd" || e.key === "+" || e.key === "=";
+}
+
+function isZoomOutKey(e) {
+  const c = e.code;
+  return c === "Minus" || c === "NumpadSubtract" || e.key === "-" || e.key === "_";
+}
+
+window.addEventListener("keydown", (e) => {
+  if (!state.renderer || keyboardTargetIgnoresMapKeys(e.target)) return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const vp = state.renderer.vp;
+  let handled = false;
+  const k = e.key;
+  if (k === "ArrowUp" || k === "w" || k === "W") {
+    vp.cy += PAN_STEP_PX / vp.scale;
+    handled = true;
+  } else if (k === "ArrowDown" || k === "s" || k === "S") {
+    vp.cy -= PAN_STEP_PX / vp.scale;
+    handled = true;
+  } else if (k === "ArrowLeft" || k === "a" || k === "A") {
+    vp.cx -= PAN_STEP_PX / vp.scale;
+    handled = true;
+  } else if (k === "ArrowRight" || k === "d" || k === "D") {
+    vp.cx += PAN_STEP_PX / vp.scale;
+    handled = true;
+  } else if (isZoomInKey(e)) {
+    const cx = canvas.width / 2, cy = canvas.height / 2;
+    vp.zoomAtScreen(cx, cy, vp.scale * ZOOM_KEY_FACTOR);
+    handled = true;
+  } else if (isZoomOutKey(e)) {
+    const cx = canvas.width / 2, cy = canvas.height / 2;
+    vp.zoomAtScreen(cx, cy, vp.scale / ZOOM_KEY_FACTOR);
+    handled = true;
+  }
+  if (!handled) return;
+  e.preventDefault();
+  draw();
+});
 // click a grid rectangle to toggle that cell
 canvas.addEventListener("click", (e) => {
   if (moved) return;
   const rect = canvas.getBoundingClientRect();
   const mx = e.clientX - rect.left, my = e.clientY - rect.top;
   const hit = pickCell(mx, my);
-  if (hit) setCellVisible(hit, !state.renderer.cells.get(hit).visible, false);
+  if (hit) {
+    state.renderer.gridFocusName = hit;
+    setCellVisible(hit, !state.renderer.cells.get(hit).visible, false);
+  }
 });
 
 // 터치 패닝 (모바일)

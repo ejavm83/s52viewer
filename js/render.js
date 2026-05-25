@@ -21,6 +21,9 @@ const DASH = [6, 4], DOTT = [1, 3], EMPTY_DASH = [];
 /** Min squared screen-space edge length (px²) for path decimation; see _path(). */
 const MIN_SEG2 = 1;
 
+/** S-57 메타 경계(M_COVR·M_CSCL) — UI 격자와 함께 켜고 끔. 표시범주 Other라 Standard에서도 격자 ON이면 허용 */
+const ENC_BOUNDARY_WITH_GRID = new Set(["M_COVR", "M_CSCL"]);
+
 // Web Mercator. Both axes must share the same units (radians) or the aspect
 // ratio is wrong, so X is longitude in radians — not degrees.
 function mercX(lonDeg) {
@@ -61,6 +64,21 @@ class Viewport {
     const metresPerPixel = (R * Math.cos(phi)) / this.scale;
     return metresPerPixel / (0.0254 / 96); // assume ~96 dpi
   }
+  /** Mercator 캐시 좌표(mx,my) — `sx`/`sy`의 역변환(픽셀은 캔버스 좌상단 기준). */
+  mercFromScreen(px, py) {
+    const w = this.canvas.width, h = this.canvas.height;
+    const mx = this.cx + (px - w / 2) / this.scale;
+    const my = this.cy + (h / 2 - py) / this.scale;
+    return [mx, my];
+  }
+  /** (px,py) 화면점이 가리키는 지점을 고정한 채 스케일만 newScale로 바꿈(핀치/커서 줌). */
+  zoomAtScreen(px, py, newScale) {
+    const w = this.canvas.width, h = this.canvas.height;
+    const [wx, wy] = this.mercFromScreen(px, py);
+    this.scale = newScale;
+    this.cx = wx - (px - w / 2) / this.scale;
+    this.cy = wy - (h / 2 - py) / this.scale;
+  }
 }
 
 class Renderer {
@@ -81,8 +99,25 @@ class Renderer {
     this._labelBoxes = [];
     this.cells = new Map();
     this.grid = [];
-    this.showGrid = true;
+    this.showGrid = false;
+    /** 사이드바/지도에서 마지막으로 포커스한 셀 — 격자 표시 시 경계를 강조 */
+    this.gridFocusName = null;
     this.lastStats = null;
+  }
+
+  /** 격자를 켤 때 이전 S-52 해석으로 빈 ops가 남은 M_COVR/M_CSCL만 재해석하도록 캐시 무효화 */
+  invalidateEncBoundaryResIfStale() {
+    for (const cell of this.cells.values()) {
+      if (!cell.features) continue;
+      for (const feat of cell.features) {
+        if (!ENC_BOUNDARY_WITH_GRID.has(feat.acronym)) continue;
+        const ops = feat._res && feat._res.ops;
+        if (!ops || !ops.length) {
+          feat._resTable = undefined;
+          feat._res = undefined;
+        }
+      }
+    }
   }
 
   _place(x, y, w, h) {
@@ -201,6 +236,7 @@ class Renderer {
       }
       for (const feat of cell.features) {
         if (!feat.geom && !feat.soundings) continue;
+        if (!this.showGrid && ENC_BOUNDARY_WITH_GRID.has(feat.acronym)) continue;
         if (this.respectScamin) {
           const sc = parseFloat(feat.attrs.SCAMIN);
           if (!Number.isNaN(sc) && denom > sc) continue;
@@ -212,7 +248,9 @@ class Renderer {
           feat._resTable = table;
         }
         const res = feat._res;
-        if (!feat.soundings && !this.catAllowed(res.displayCat)) continue;
+        const encBoundaryWithGrid =
+          this.showGrid && ENC_BOUNDARY_WITH_GRID.has(feat.acronym);
+        if (!feat.soundings && !this.catAllowed(res.displayCat) && !encBoundaryWithGrid) continue;
         this._prep(feat);
         const b = feat._bbox;
         if (b) {
@@ -286,34 +324,51 @@ class Renderer {
   }
 
   _drawGrid() {
-    const ctx = this.ctx, vp = this.vp;
+    const ctx = this.ctx;
     ctx.save();
     ctx.font = "10px monospace";
     ctx.textAlign = "left";
     ctx.textBaseline = "top";
+    const focus = this.gridFocusName;
     for (const g of this.grid) {
-      const cell = this.cells.get(g.name);
-      const on = cell && cell.visible;
-      const col = BAND_COLORS[bandOf(g.name)] || "rgba(120,120,120,0.9)";
-      const x0 = vp.project(g.minX, g.maxY), x1 = vp.project(g.maxX, g.minY);
-      const x = Math.min(x0[0], x1[0]), y = Math.min(x0[1], x1[1]);
-      const ww = Math.abs(x1[0] - x0[0]), hh = Math.abs(x1[1] - x0[1]);
-      if (ww < 3 && hh < 3) continue;
-      if (x + ww < 0 || y + hh < 0 || x > this.canvas.width || y > this.canvas.height) continue;
-      ctx.lineWidth = on ? 2 : 1;
-      ctx.strokeStyle = col;
-      ctx.setLineDash(on ? [] : [4, 3]);
-      ctx.strokeRect(x, y, ww, hh);
-      if (on) { ctx.fillStyle = col.replace(/[\d.]+\)$/, "0.06)"); ctx.fillRect(x, y, ww, hh); }
-      if (ww > 36 && hh > 14) {
-        const label = g.name.replace(/\.000$/i, "");
-        ctx.fillStyle = col;
-        ctx.fillRect(x + 1, y + 1, label.length * 6 + 4, 12);
-        ctx.fillStyle = "#fff";
-        ctx.fillText(label, x + 3, y + 2);
-      }
+      if (focus && g.name === focus) continue;
+      this._drawGridCell(g, false);
+    }
+    if (focus) {
+      const g = this.grid.find((e) => e.name === focus);
+      if (g) this._drawGridCell(g, true);
     }
     ctx.restore();
+  }
+
+  _drawGridCell(g, focused) {
+    const ctx = this.ctx, vp = this.vp;
+    const cell = this.cells.get(g.name);
+    const on = cell && cell.visible;
+    const col = BAND_COLORS[bandOf(g.name)] || "rgba(120,120,120,0.9)";
+    const x0 = vp.project(g.minX, g.maxY), x1 = vp.project(g.maxX, g.minY);
+    const x = Math.min(x0[0], x1[0]), y = Math.min(x0[1], x1[1]);
+    const ww = Math.abs(x1[0] - x0[0]), hh = Math.abs(x1[1] - x0[1]);
+    if (ww < 3 && hh < 3) return;
+    if (x + ww < 0 || y + hh < 0 || x > this.canvas.width || y > this.canvas.height) return;
+    if (focused) {
+      ctx.strokeStyle = "rgba(255,255,255,0.95)";
+      ctx.lineWidth = 5;
+      ctx.setLineDash([]);
+      ctx.strokeRect(x, y, ww, hh);
+    }
+    ctx.lineWidth = focused ? 3 : on ? 2 : 1;
+    ctx.strokeStyle = col;
+    ctx.setLineDash(focused || on ? [] : [4, 3]);
+    ctx.strokeRect(x, y, ww, hh);
+    if (on) { ctx.fillStyle = col.replace(/[\d.]+\)$/, "0.06)"); ctx.fillRect(x, y, ww, hh); }
+    if (ww > 36 && hh > 14) {
+      const label = g.name.replace(/\.000$/i, "");
+      ctx.fillStyle = col;
+      ctx.fillRect(x + 1, y + 1, label.length * 6 + 4, 12);
+      ctx.fillStyle = "#fff";
+      ctx.fillText(label, x + 3, y + 2);
+    }
   }
 
   _fillArea(rings, color, alpha) {

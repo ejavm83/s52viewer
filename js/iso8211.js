@@ -122,6 +122,7 @@ class FieldDef {
 class DDF {
   constructor() {
     this.fieldDefs = new Map(); // tag -> FieldDef
+    this.nall = 1; // national lexical level (1=Latin-1, 2=UCS-2); set from DSSI
   }
 
   static parse(buffer) {
@@ -196,12 +197,42 @@ class DDF {
       if (!def || def.formats.length === 0) {
         continue; // structural / unknown
       }
-      const repeats = decodeField(view, bytes, start, end, def);
+      // National attributes (NATF) use the dataset's national lexical level.
+      // Korean ENCs use NALL=2 (UCS-2 / UTF-16LE) for NOBJNM/NINFOM.
+      const repeats = (entry.tag === "NATF" && this.nall === 2)
+        ? decodeNatfUCS2(view, start, end)
+        : decodeField(view, bytes, start, end, def);
       fields[entry.tag] = repeats;
       order.push(entry.tag);
     }
+    // learn the national lexical level from the dataset structure record
+    if (fields.DSSI && fields.DSSI[0] && fields.DSSI[0].NALL != null) {
+      this.nall = fields.DSSI[0].NALL;
+    }
     return { fields, order };
   }
+}
+
+// Decode a NATF field whose ATVL subfields are UCS-2 (UTF-16LE) — used for
+// national-language text (e.g. Korean NOBJNM). Each row is ATTL (2-byte int)
+// followed by UTF-16 code units terminated by the unit terminator (0x001F).
+function decodeNatfUCS2(view, start, end) {
+  const rows = [];
+  let off = start;
+  while (off + 2 <= end) {
+    const attl = view.getUint16(off, true);
+    if (attl === 0x001e) break; // field terminator
+    off += 2;
+    let s = "";
+    while (off + 2 <= end) {
+      const u = view.getUint16(off, true);
+      off += 2;
+      if (u === 0x001f || u === 0x001e) break; // unit / field terminator
+      s += String.fromCharCode(u);
+    }
+    rows.push({ ATTL: attl, ATVL: s });
+  }
+  return rows;
 }
 
 function ddfSetDef(ddf, tag, name, labels, formats) {

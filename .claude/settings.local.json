@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls \"C:\\\\Program Files \\(x86\\)\\\\OpenCPN\" 2>/dev/null || echo \"NOT FOUND with ls\")",
+      "Bash(python -c \"import osgeo; print\\('GDAL/OGR ok', osgeo.__version__\\)\")",
+      "Bash(python -c \"from osgeo import ogr; print\\('ogr ok'\\)\")",
+      "Bash(awk '/<symbol>/{c++} c==1,/<\\\\/symbol>/' chartsymbols.xml)",
+      "Bash(mkdir -p assets js)",
+      "Bash(cp \"C:\\\\Program Files \\(x86\\)\\\\OpenCPN\\\\s57data\\\\chartsymbols.xml\" assets/)",
+      "Bash(cp \"C:\\\\Program Files \\(x86\\)\\\\OpenCPN\\\\s57data\\\\rastersymbols-day.png\" assets/)",
+      "Bash(cp \"C:\\\\Program Files \\(x86\\)\\\\OpenCPN\\\\s57data\\\\rastersymbols-dusk.png\" assets/)",
+      "Bash(cp \"C:\\\\Program Files \\(x86\\)\\\\OpenCPN\\\\s57data\\\\rastersymbols-dark.png\" assets/)",
+      "Bash(echo \"=== search common locations for .000 ENC files ===\"; find \"C:\\\\Program Files \\(x86\\)\\\\OpenCPN\" -iname \"*.000\" 2>/dev/null | head; find /c/Users -iname \"*.000\" 2>/dev/null | head; find /e -maxdepth 4 -iname \"*.000\" 2>/dev/null | head; echo \"done\")",
+      "Bash(node test/parse-test.mjs \"000/KR1O0000.000\")",
+      "Bash(node test/scan.mjs)",
+      "Bash(node serve.js 8080)",
+      "mcp__Claude_Preview__preview_start"
+    ]
+  }
+}

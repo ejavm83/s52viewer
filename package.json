@@ -1,0 +1,10 @@
+{
+  "name": "s-52-viewer",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "serve": "node serve.js",
+    "test": "node test/parse-test.mjs"
+  }
+}

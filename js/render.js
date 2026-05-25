@@ -17,6 +17,10 @@ function prioIndex(p) {
   return i < 0 ? 5 : i;
 }
 
+const DASH = [6, 4], DOTT = [1, 3], EMPTY_DASH = [];
+/** Min squared screen-space edge length (px²) for path decimation; see _path(). */
+const MIN_SEG2 = 1;
+
 // Web Mercator. Both axes must share the same units (radians) or the aspect
 // ratio is wrong, so X is longitude in radians — not degrees.
 function mercX(lonDeg) {
@@ -363,10 +367,6 @@ class Renderer {
     ctx.fillText(op.text, x + 4, y - 4);
   }
 }
-
-const DASH = [6, 4], DOTT = [1, 3], EMPTY_DASH = [];
-/** Min squared screen-space edge length (px²) for path decimation; see _path(). */
-const MIN_SEG2 = 1;
 
 function bandOf(name) {
   const m = name.match(/^[A-Z]{2}(\d)/i);

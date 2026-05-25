@@ -36,7 +36,7 @@ http
       return;
     }
     if (urlPath === "/cell-index.json") {
-      const prebuilt = path.join(root, "public", "cell-index.json");
+      const prebuilt = path.join(root, "cell-index.json");
       readFile(prebuilt, (err, data) => {
         if (!err) {
           res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });

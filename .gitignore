@@ -6,4 +6,4 @@ node_modules/
 Thumbs.db
 
 # Generated at build time (Vercel / npm run build)
-public/cell-index.json
+/cell-index.json

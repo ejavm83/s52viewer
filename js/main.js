@@ -46,7 +46,10 @@ async function init() {
   state.renderer = new Renderer(canvas, state.s52, state.atlas.DAY_BRIGHT);
 
   setStatus("셀 커버리지 인덱스 로드 중…");
-  const idx = await (await fetch("/api/index")).json();
+  let idxRes = await fetch("/cell-index.json", { cache: "no-store" });
+  if (!idxRes.ok) idxRes = await fetch("/api/index");
+  if (!idxRes.ok) throw new Error("셀 인덱스를 불러오지 못했습니다.");
+  const idx = await idxRes.json();
   state.renderer.grid = idx;
   for (const g of idx) {
     state.renderer.cells.set(g.name, {

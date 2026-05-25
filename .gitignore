@@ -4,3 +4,6 @@ node_modules/
 *.log
 .DS_Store
 Thumbs.db
+
+# Generated at build time (Vercel / npm run build)
+public/cell-index.json

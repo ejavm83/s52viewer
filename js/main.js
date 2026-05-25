@@ -81,13 +81,7 @@ async function init() {
   draw();
 
   if (isMobileLayout()) {
-    setMapLoading(`ENC 전체 로드 (0/${idx.length})…`);
-    await loadMany(idx.map((g) => g.name));
-    state.renderer.vp.fit(state.globalBounds);
-    state.fitted = true;
-    resize();
-    draw();
-    setMapLoading("");
+    setStatus(`준비 완료 — 셀 ${idx.length}개. 지도를 움직이면 해당 화면 영역의 ENC만 불러옵니다.`);
   } else {
     setStatus(`준비 완료 — 셀 ${idx.length}개. 기본 뷰에서 겹치는 셀을 곧 불러옵니다…`);
   }
@@ -247,6 +241,18 @@ document.getElementById("filter").addEventListener("input", (e) => {
   for (const [name, r] of rows) r.el.style.display = name.toUpperCase().includes(q) ? "" : "none";
 });
 
+/** 모바일: 팬·줌이 멈춘 뒤 화면과 겹치는 셀만 백그라운드 로드(디바운스) */
+let _mobileVpSyncTimer = null;
+function scheduleMobileViewportSync() {
+  if (!isMobileLayout() || !state.renderer) return;
+  clearTimeout(_mobileVpSyncTimer);
+  _mobileVpSyncTimer = setTimeout(() => {
+    _mobileVpSyncTimer = null;
+    const names = namesIntersectingViewport();
+    void loadMany(names, { mobileLabel: "화면 영역 ENC" });
+  }, 220);
+}
+
 /** 셀 커버리지가 현재 캔버스 뷰포트와 겹치는 셀 이름 목록 */
 function namesIntersectingViewport() {
   const vp = state.renderer.vp;
@@ -275,13 +281,14 @@ document.getElementById("fitAll").addEventListener("click", () => {
   state.renderer.vp.fit(state.globalBounds); draw();
 });
 
-async function loadMany(names) {
+async function loadMany(names, opts = {}) {
+  const mobileLabel = opts.mobileLabel || "ENC 전체";
   const CONC = 4;
   let done = 0;
   const total = names.length;
   for (let i = 0; i < names.length; i += CONC) {
     const chunk = names.slice(i, i + CONC);
-    if (isMobileLayout()) setMapLoading(`ENC 전체 로드 (${done}/${total})…`);
+    if (isMobileLayout()) setMapLoading(`${mobileLabel} (${done}/${total})…`);
     setStatus(`로딩 ${Math.min(done + 1, total)}/${total}`);
     await Promise.all(chunk.map((n) => ensureLoaded(n)));
     for (const name of chunk) {
@@ -349,6 +356,11 @@ document.getElementById("grid").addEventListener("change", (e) => {
 document.getElementById("scaledisp").addEventListener("change", (e) => { state.renderer.scaleDisplay = e.target.checked; draw(); });
 document.getElementById("depthunit").addEventListener("change", (e) => { state.renderer.depthUnit = e.target.value; draw(); });
 
+document.getElementById("sidebarVisible").addEventListener("change", (e) => {
+  document.body.classList.toggle("sidebar-collapsed", !e.target.checked);
+  resize();
+});
+
 // ---- pan & zoom + click-to-toggle a cell on the grid ----
 let dragging = false, moved = false, startX = 0, startY = 0, lastX = 0, lastY = 0;
 canvas.addEventListener("mousedown", (e) => {
@@ -377,6 +389,7 @@ canvas.addEventListener("wheel", (e) => {
   e.preventDefault();
   state.renderer.vp.scale *= e.deltaY < 0 ? 1.15 : 1 / 1.15;
   draw();
+  if (isMobileLayout()) scheduleMobileViewportSync();
 }, { passive: false });
 
 const ZOOM_KEY_FACTOR = 1.15;
@@ -435,6 +448,7 @@ window.addEventListener("keydown", (e) => {
   if (!handled) return;
   e.preventDefault();
   draw();
+  if (isMobileLayout()) scheduleMobileViewportSync();
 });
 // click a grid rectangle to toggle that cell
 canvas.addEventListener("click", (e) => {
@@ -448,16 +462,54 @@ canvas.addEventListener("click", (e) => {
   }
 });
 
-// 터치 패닝 (모바일)
+// 터치 패닝 · 핀치 줌 (모바일)
 let touchLast = null;
+/** @type {{ dist: number, scale: number, cx: number, cy: number } | null } */
+let pinch = null;
+
+function touchDistance(a, b) {
+  const dx = a.clientX - b.clientX, dy = a.clientY - b.clientY;
+  return Math.hypot(dx, dy) || 1;
+}
+
 canvas.addEventListener("touchstart", (e) => {
+  if (e.touches.length === 2) {
+    touchLast = null;
+    const t0 = e.touches[0], t1 = e.touches[1];
+    const rect = canvas.getBoundingClientRect();
+    pinch = {
+      dist: touchDistance(t0, t1),
+      scale: state.renderer.vp.scale,
+      cx: ((t0.clientX + t1.clientX) / 2) - rect.left,
+      cy: ((t0.clientY + t1.clientY) / 2) - rect.top,
+    };
+    dragging = true;
+    moved = false;
+    return;
+  }
+  pinch = null;
   if (e.touches.length !== 1) { touchLast = null; return; }
   touchLast = { x: e.touches[0].clientX, y: e.touches[0].clientY };
   dragging = true;
   moved = false;
 }, { passive: true });
 canvas.addEventListener("touchmove", (e) => {
-  if (!touchLast || e.touches.length !== 1 || !state.renderer) return;
+  if (!state.renderer) return;
+  if (e.touches.length === 2 && pinch) {
+    e.preventDefault();
+    const t0 = e.touches[0], t1 = e.touches[1];
+    const rect = canvas.getBoundingClientRect();
+    const d = touchDistance(t0, t1);
+    const factor = d / pinch.dist;
+    const newScale = Math.min(8e7, Math.max(200, pinch.scale * factor));
+    const cx = ((t0.clientX + t1.clientX) / 2) - rect.left;
+    const cy = ((t0.clientY + t1.clientY) / 2) - rect.top;
+    state.renderer.vp.zoomAtScreen(cx, cy, newScale);
+    if (Math.abs(factor - 1) > 0.02) moved = true;
+    draw();
+    return;
+  }
+  if (!touchLast || e.touches.length !== 1) return;
   e.preventDefault();
   const t = e.touches[0];
   const dx = t.clientX - touchLast.x, dy = t.clientY - touchLast.y;
@@ -470,10 +522,23 @@ canvas.addEventListener("touchmove", (e) => {
 }, { passive: false });
 canvas.addEventListener("touchend", (e) => {
   if (moved) e.preventDefault();
-  touchLast = null;
-  dragging = false;
+  if (e.touches.length < 2) pinch = null;
+  if (e.touches.length === 1) {
+    const t = e.touches[0];
+    touchLast = { x: t.clientX, y: t.clientY };
+    dragging = true;
+  } else {
+    touchLast = null;
+    dragging = false;
+    if (isMobileLayout() && moved) scheduleMobileViewportSync();
+  }
 });
-canvas.addEventListener("touchcancel", () => { touchLast = null; dragging = false; });
+canvas.addEventListener("touchcancel", () => {
+  touchLast = null;
+  pinch = null;
+  dragging = false;
+  if (isMobileLayout() && moved) scheduleMobileViewportSync();
+});
 function pickCell(mx, my) {
   // smallest-area covering rectangle under the cursor (favours detailed cells)
   const vp = state.renderer.vp;
@@ -494,5 +559,5 @@ window.s52app = { state, loadFromUrl, setCellVisible, draw };
 init().then(async () => {
   const cell = new URLSearchParams(location.search).get("cell");
   if (cell) await loadFromUrl(cell);
-  else if (!isMobileLayout()) await loadMany(namesIntersectingViewport());
+  else await loadMany(namesIntersectingViewport(), { mobileLabel: "화면 영역 ENC" });
 });

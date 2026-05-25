@@ -22,7 +22,9 @@
       "Bash(node --check serve.js)",
       "Bash(awk 'BEGIN{RS=\"</lookup>\"} /name=\"TSSLPT\"/ {match\\($0,/<instruction>[^<]*/\\);print substr\\($0,RSTART+13,RLENGTH-13\\)}' chartsymbols.xml)",
       "Bash(node --check js/s52.js)",
-      "Bash(node --check js/worker.js)"
+      "Bash(node --check js/worker.js)",
+      "Bash(node -e *)",
+      "Bash(node --check js/iso8211.js)"
     ]
   }
 }

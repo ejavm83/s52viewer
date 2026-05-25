@@ -13,8 +13,22 @@
     background: #1c2733; color: #d4eaee; flex-wrap: wrap;
   }
   #toolbar label { font-size: 13px; display: flex; align-items: center; gap: 4px; }
-  #toolbar select, #toolbar input[type=file] { font-size: 13px; }
   #toolbar h1 { font-size: 15px; margin: 0 8px 0 0; font-weight: 600; }
+  #main { flex: 1; display: flex; min-height: 0; }
+  #sidebar {
+    width: 230px; background: #11181f; color: #cfe0e5; display: flex; flex-direction: column;
+    border-right: 1px solid #2a3742;
+  }
+  #sidebar .pad { padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+  #sidebar input[type=text] { width: 100%; padding: 4px 6px; background: #1c2733; color: #d4eaee; border: 1px solid #2a3742; }
+  #sidebar .btns { display: flex; gap: 4px; flex-wrap: wrap; }
+  #sidebar button { flex: 1; font-size: 11px; padding: 4px 2px; background: #233140; color: #d4eaee; border: 1px solid #2a3742; cursor: pointer; }
+  #sidebar button:hover { background: #2e4255; }
+  #celllist { flex: 1; overflow-y: auto; font-family: Consolas, monospace; font-size: 12px; }
+  .cellrow { display: flex; align-items: center; gap: 6px; padding: 2px 8px; cursor: pointer; white-space: nowrap; }
+  .cellrow:hover { background: #1c2733; }
+  .cellrow.on { background: #1f3247; }
+  .cellrow .dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; }
   #stage { flex: 1; position: relative; background: #73b6ef; overflow: hidden; }
   #chart { position: absolute; inset: 0; cursor: grab; }
   #chart:active { cursor: grabbing; }
@@ -27,10 +41,7 @@
 <body>
   <div id="toolbar">
     <h1>S-52 ENC Viewer</h1>
-    <label>셀 목록:
-      <select id="cells"><option value="">— 000 폴더 —</option></select>
-    </label>
-    <label>또는 열기: <input type="file" id="file" accept=".000,.001,.002,*" /></label>
+    <label>파일 열기: <input type="file" id="file" accept=".000,.001,.002,*" /></label>
     <label>색상표:
       <select id="palette">
         <option value="DAY_BRIGHT">DAY_BRIGHT</option>
@@ -43,16 +54,31 @@
     <label>표시범주:
       <select id="dispcat">
         <option value="Displaybase">Base</option>
-        <option value="Standard">Standard</option>
-        <option value="Other" selected>All / Other</option>
+        <option value="Standard" selected>Standard</option>
+        <option value="Other">All / Other</option>
       </select>
     </label>
+    <label><input type="checkbox" id="scaledisp" checked /> 원근간략화</label>
+    <label><input type="checkbox" id="grid" checked /> 격자</label>
     <label><input type="checkbox" id="text" checked /> 라벨</label>
     <label><input type="checkbox" id="sound" checked /> 수심</label>
     <label><input type="checkbox" id="scamin" checked /> 축척억제</label>
     <label><input type="checkbox" id="declutter" checked /> 겹침제거</label>
   </div>
-  <div id="stage"><canvas id="chart"></canvas></div>
+  <div id="main">
+    <div id="sidebar">
+      <div class="pad">
+        <input type="text" id="filter" placeholder="셀 이름 검색…" />
+        <div class="btns">
+          <button id="showVisible">보이는영역 표시</button>
+          <button id="hideAll">모두 숨김</button>
+          <button id="fitAll">전체보기</button>
+        </div>
+      </div>
+      <div id="celllist"></div>
+    </div>
+    <div id="stage"><canvas id="chart"></canvas></div>
+  </div>
   <div id="status">초기화 중…</div>
   <script type="module" src="js/main.js"></script>
 </body>

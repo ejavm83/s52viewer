@@ -125,15 +125,65 @@ function draw() {
 }
 
 // ---- cell loading ----
+// Pool of parsing workers: the heavy ISO-8211 + S-57 decode runs off the main
+// thread so the UI stays responsive even while loading many large cells.
+class CellLoader {
+  constructor(size) {
+    this.idle = []; this.queue = []; this.jobs = new Map(); this.nextId = 1; this.fallback = false;
+    try {
+      for (let i = 0; i < size; i++) {
+        const w = new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
+        w.onmessage = (e) => this._done(w, e.data);
+        w.onerror = (e) => console.error("parse worker error:", e.message || e);
+        this.idle.push(w);
+      }
+    } catch (err) {
+      console.warn("workers unavailable; parsing on main thread:", err);
+    }
+    if (this.idle.length === 0) this.fallback = true;
+  }
+  parse(buffer) {
+    // fallback: parse synchronously on the main thread (worker unsupported)
+    if (this.fallback) return Promise.resolve(S57.build(DDF.parse(buffer), state.catalog));
+    return new Promise((resolve, reject) => {
+      const id = this.nextId++;
+      this.jobs.set(id, { resolve, reject });
+      this.queue.push({ id, buffer });
+      this._pump();
+    });
+  }
+  _pump() {
+    while (this.idle.length && this.queue.length) {
+      const w = this.idle.pop();
+      const job = this.queue.shift();
+      w.postMessage({ id: job.id, buffer: job.buffer }, [job.buffer]);
+    }
+  }
+  _done(w, data) {
+    const job = this.jobs.get(data.id);
+    this.jobs.delete(data.id);
+    this.idle.push(w);
+    this._pump();
+    if (!job) return;
+    if (data.error) job.reject(new Error(data.error));
+    else job.resolve(data.chart);
+  }
+}
+const loader = new CellLoader(Math.min(4, navigator.hardwareConcurrency || 4));
+
 async function ensureLoaded(name) {
   const cell = state.renderer.cells.get(name);
   if (!cell || cell.loaded) return cell;
-  const buf = await (await fetch("000/" + name)).arrayBuffer();
-  const chart = S57.build(DDF.parse(buf), state.catalog);
-  cell.features = chart.features;
-  cell.chartBounds = chart.bounds;
-  cell.loaded = true;
-  return cell;
+  if (cell._loading) return cell._loading; // dedupe concurrent requests
+  cell._loading = (async () => {
+    const buf = await (await fetch("000/" + name)).arrayBuffer();
+    const chart = await loader.parse(buf); // parsed in a worker (off main thread)
+    cell.features = chart.features;
+    cell.chartBounds = chart.bounds;
+    cell.loaded = true;
+    return cell;
+  })();
+  return cell._loading;
 }
 
 async function setCellVisible(name, on, refit) {
@@ -255,7 +305,7 @@ window.addEventListener("drop", (e) => {
 async function openFile(file) {
   setStatus(`${file.name} 파싱 중…`);
   const buf = await file.arrayBuffer();
-  const chart = S57.build(DDF.parse(buf), state.catalog);
+  const chart = await loader.parse(buf); // parsed in a worker
   let cell = state.renderer.cells.get(file.name);
   if (!cell) {
     cell = { name: file.name, bounds: chart.bounds, visible: true, loaded: true, features: chart.features, chartBounds: chart.bounds };
@@ -289,19 +339,28 @@ document.getElementById("scamin").addEventListener("change", (e) => { state.rend
 document.getElementById("declutter").addEventListener("change", (e) => { state.renderer.declutter = e.target.checked; draw(); });
 document.getElementById("grid").addEventListener("change", (e) => { state.renderer.showGrid = e.target.checked; draw(); });
 document.getElementById("scaledisp").addEventListener("change", (e) => { state.renderer.scaleDisplay = e.target.checked; draw(); });
+document.getElementById("depthunit").addEventListener("change", (e) => { state.renderer.depthUnit = e.target.value; draw(); });
 
 // ---- pan & zoom + click-to-toggle a cell on the grid ----
-let dragging = false, moved = false, lastX = 0, lastY = 0;
-canvas.addEventListener("mousedown", (e) => { dragging = true; moved = false; lastX = e.clientX; lastY = e.clientY; });
-window.addEventListener("mouseup", () => { dragging = false; });
+let dragging = false, moved = false, startX = 0, startY = 0, lastX = 0, lastY = 0;
+canvas.addEventListener("mousedown", (e) => {
+  dragging = true; moved = false;
+  startX = lastX = e.clientX; startY = lastY = e.clientY;
+  state.renderer.beginPan();
+});
+window.addEventListener("mouseup", () => {
+  if (!dragging) return;
+  dragging = false;
+  if (moved) draw(); // final full-detail render at the settled position
+});
 window.addEventListener("mousemove", (e) => {
   if (!dragging) return;
-  const dx = e.clientX - lastX, dy = e.clientY - lastY;
-  if (Math.abs(dx) + Math.abs(dy) > 2) moved = true;
+  if (Math.abs(e.clientX - startX) + Math.abs(e.clientY - startY) > 2) moved = true;
   const vp = state.renderer.vp;
-  vp.cx -= dx / vp.scale; vp.cy += dy / vp.scale;
+  vp.cx -= (e.clientX - lastX) / vp.scale; vp.cy += (e.clientY - lastY) / vp.scale;
   lastX = e.clientX; lastY = e.clientY;
-  draw();
+  // cheap: blit the snapshot shifted by the total drag, no feature drawing
+  state.renderer.previewPan(e.clientX - startX, e.clientY - startY);
 });
 canvas.addEventListener("wheel", (e) => {
   e.preventDefault();

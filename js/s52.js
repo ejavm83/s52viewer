@@ -184,9 +184,15 @@ class S52 {
           ops.push({ op: "LS", style: "SOLD", width: 1.5, color: this.color("CHBLK"), complex: args[0] });
           break;
         }
-        case "SY":
-          ops.push({ op: "SY", sym: args[0] });
+        case "SY": {
+          // SY(symbol[,rotation]) — rotation is degrees or an attribute (ORIENT)
+          const syOp = { op: "SY", sym: args[0] };
+          if (args[1] !== undefined && args[1] !== "") {
+            syOp.rot = resolveAngle(args[1], feat);
+          }
+          ops.push(syOp);
           break;
+        }
         case "TX":
         case "TE": {
           const text = this._textValue(op, args, feat);
@@ -276,6 +282,17 @@ function num(v) {
   if (v === undefined || v === null || v === "") return null;
   const n = parseFloat(v);
   return Number.isNaN(n) ? null : n;
+}
+
+// Resolve an SY rotation argument: a literal number of degrees, or an S-57
+// attribute acronym (e.g. ORIENT) whose value is read from the feature.
+function resolveAngle(arg, feat) {
+  if (/^[A-Z]{6}$/.test(arg)) {
+    const n = parseFloat(feat.attrs[arg]);
+    return Number.isNaN(n) ? 0 : n;
+  }
+  const n = parseFloat(arg);
+  return Number.isNaN(n) ? 0 : n;
 }
 
 function splitCommands(instr) {

@@ -15,7 +15,14 @@
       "Bash(node test/scan.mjs)",
       "Bash(node serve.js 8080)",
       "mcp__Claude_Preview__preview_start",
-      "Bash(node -e \"const t=Date.now\\(\\);fetch\\('http://localhost:8080/api/index'\\).then\\(r=>r.json\\(\\)\\).then\\(a=>{console.log\\('cells:',a.length,'in',\\(\\(Date.now\\(\\)-t\\)/1000\\).toFixed\\(1\\)+'s'\\);console.log\\('sample:',JSON.stringify\\(a[0]\\)\\);console.log\\('sample2:',JSON.stringify\\(a.find\\(x=>x.name.startsWith\\('KR5'\\)\\)\\)\\);}\\).catch\\(e=>console.log\\('ERR',e.message\\)\\);\")"
+      "Bash(node -e \"const t=Date.now\\(\\);fetch\\('http://localhost:8080/api/index'\\).then\\(r=>r.json\\(\\)\\).then\\(a=>{console.log\\('cells:',a.length,'in',\\(\\(Date.now\\(\\)-t\\)/1000\\).toFixed\\(1\\)+'s'\\);console.log\\('sample:',JSON.stringify\\(a[0]\\)\\);console.log\\('sample2:',JSON.stringify\\(a.find\\(x=>x.name.startsWith\\('KR5'\\)\\)\\)\\);}\\).catch\\(e=>console.log\\('ERR',e.message\\)\\);\")",
+      "Bash(node -e \"const t=Date.now\\(\\);fetch\\('http://localhost:8080/api/index'\\).then\\(r=>r.json\\(\\)\\).then\\(a=>console.log\\('index built:',a.length,'cells in',\\(\\(Date.now\\(\\)-t\\)/1000\\).toFixed\\(1\\)+'s'\\)\\).catch\\(e=>console.log\\('ERR',e.message\\)\\);\")",
+      "Bash(node --check js/render.js)",
+      "Bash(node --check js/main.js)",
+      "Bash(node --check serve.js)",
+      "Bash(awk 'BEGIN{RS=\"</lookup>\"} /name=\"TSSLPT\"/ {match\\($0,/<instruction>[^<]*/\\);print substr\\($0,RSTART+13,RLENGTH-13\\)}' chartsymbols.xml)",
+      "Bash(node --check js/s52.js)",
+      "Bash(node --check js/worker.js)"
     ]
   }
 }

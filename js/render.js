@@ -77,6 +77,7 @@ class Renderer {
     this.scaleDisplay = true;
     this.scaleOutFactor = 16;
     this.minDisplayCat = "Standard";
+    this.depthUnit = "m"; // m | ft | fathom — sounding display unit
     this._labelBoxes = [];
     this.cells = new Map();
     this.grid = [];
@@ -148,6 +149,27 @@ class Renderer {
     feat._bbox = minx === Infinity ? null : [minx, miny, maxx, maxy];
   }
 
+  // The loaded cell whose compilation scale (CSCL) is nearest the current view
+  // denominator, among cells overlapping the visible window. Used to draw only
+  // the best-matching scale band instead of stacking every overlapping chart.
+  _refScale(denom, winMinX, winMaxX, winMinY, winMaxY) {
+    const RAD = 180 / Math.PI;
+    const lonMin = winMinX * RAD, lonMax = winMaxX * RAD;
+    const latMin = (2 * Math.atan(Math.exp(winMinY)) - Math.PI / 2) * RAD;
+    const latMax = (2 * Math.atan(Math.exp(winMaxY)) - Math.PI / 2) * RAD;
+    const lnD = Math.log(denom);
+    let best = null, bestDiff = Infinity;
+    for (const cell of this.cells.values()) {
+      if (!cell.visible || !cell.loaded) continue;
+      const b = cell.bounds, cscl = b && b.cscl;
+      if (!cscl) continue;
+      if (b.maxX < lonMin || b.minX > lonMax || b.maxY < latMin || b.minY > latMax) continue;
+      const diff = Math.abs(Math.log(cscl) - lnD);
+      if (diff < bestDiff) { bestDiff = diff; best = cscl; }
+    }
+    return best;
+  }
+
   render() {
     const ctx = this.ctx, vp = this.vp;
     const w = this.canvas.width, h = this.canvas.height;
@@ -162,12 +184,21 @@ class Renderer {
     const winMinX = vp.cx - halfW, winMaxX = vp.cx + halfW;
     const winMinY = vp.cy - halfH, winMaxY = vp.cy + halfH;
 
+    // OpenCPN-style chart selection: when cells of several scales overlap, pick
+    // the band whose compilation scale best matches the view, and draw only it
+    // (others would just stack and muddy the picture). refCscl = the loaded
+    // cell scale nearest the view denominator over the visible window.
+    const refCscl = this.scaleDisplay ? this._refScale(denom, winMinX, winMaxX, winMinY, winMaxY) : null;
+
     let drawn = 0, culled = 0;
     const resolved = [];
     for (const cell of this.cells.values()) {
       if (!cell.visible || !cell.loaded || !cell.features) continue;
       const cscl = cell.bounds && cell.bounds.cscl;
-      if (this.scaleDisplay && cscl && denom > cscl * this.scaleOutFactor) continue;
+      if (this.scaleDisplay && cscl) {
+        if (denom > cscl * this.scaleOutFactor) continue;        // far too detailed
+        if (refCscl && (cscl < refCscl / 2.5 || cscl > refCscl * 2.5)) continue; // not the chosen band
+      }
       for (const feat of cell.features) {
         if (!feat.geom && !feat.soundings) continue;
         if (this.respectScamin) {
@@ -208,7 +239,7 @@ class Renderer {
       if (!pg || pg.type !== "Area") continue;
       for (const op of r.ops) {
         if (op.op === "AC") this._fillArea(pg.rings, op.color, 1);
-        else if (op.op === "AP") this._fillArea(pg.rings, op.color, 0.18);
+        else if (op.op === "AP") this._fillArea(pg.rings, op.color, 0.12);
       }
     }
     // pass 2: lines — batched by style so thousands of features stroke in a
@@ -229,7 +260,7 @@ class Renderer {
     // pass 3: point symbols, soundings, text
     for (const r of resolved) {
       for (const op of r.ops) {
-        if (op.op === "SY") this._symbolFeature(r.feat, op.sym);
+        if (op.op === "SY") this._symbolFeature(r.feat, op.sym, op.rot);
         else if (op.op === "SOUNDG" && this.showSoundings) this._soundings(r.feat);
         else if (op.op === "TX" && this.showText) this._text(r.feat, op);
       }
@@ -237,6 +268,21 @@ class Renderer {
 
     if (this.showGrid) this._drawGrid();
     this.lastStats = { drawn, culled, denom: Math.round(denom) };
+  }
+
+  // --- fast pan: snapshot the last full frame, then blit it translated while
+  // the user drags, deferring the (expensive) full re-render until they stop.
+  beginPan() {
+    if (!this._snap) this._snap = document.createElement("canvas");
+    this._snap.width = this.canvas.width;
+    this._snap.height = this.canvas.height;
+    this._snap.getContext("2d").drawImage(this.canvas, 0, 0);
+  }
+  previewPan(ox, oy) {
+    const ctx = this.ctx;
+    ctx.fillStyle = this.s52.color("DEPDW");
+    ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+    if (this._snap) ctx.drawImage(this._snap, ox, oy);
   }
 
   _drawGrid() {
@@ -319,12 +365,14 @@ class Renderer {
     }
   }
 
-  _symbolFeature(feat, symName) {
+  _symbolFeature(feat, symName, rot) {
     const a = feat._pg && feat._pg.anchor;
-    if (a) this._blit(symName, a[0], a[1]);
+    if (a) this._blit(symName, a[0], a[1], rot);
   }
 
-  _blit(symName, mx, my) {
+  // rot: degrees clockwise from north (S-57 ORIENT). Screen is north-up so the
+  // canvas rotation equals the bearing directly.
+  _blit(symName, mx, my, rot) {
     const s = this.s52.symbols.get(symName);
     const x = this.vp.sx(mx), y = this.vp.sy(my);
     if (!s || !this.atlas) {
@@ -333,7 +381,16 @@ class Renderer {
       ctx.beginPath(); ctx.arc(x, y, 3, 0, 7); ctx.fill();
       return;
     }
-    this.ctx.drawImage(this.atlas, s.x, s.y, s.w, s.h, x - s.px, y - s.py, s.w, s.h);
+    if (rot) {
+      const ctx = this.ctx;
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(rot * Math.PI / 180);
+      ctx.drawImage(this.atlas, s.x, s.y, s.w, s.h, -s.px, -s.py, s.w, s.h);
+      ctx.restore();
+    } else {
+      this.ctx.drawImage(this.atlas, s.x, s.y, s.w, s.h, x - s.px, y - s.py, s.w, s.h);
+    }
   }
 
   _soundings(feat) {
@@ -346,8 +403,7 @@ class Renderer {
     for (const s of ps) {
       const x = vp.sx(s[0]), y = vp.sy(s[1]);
       if (x < -20 || y < -20 || x > this.canvas.width + 20 || y > this.canvas.height + 20) continue;
-      const d = s[2];
-      const label = d < 31 ? d.toFixed(1) : Math.round(d).toString();
+      const label = soundingLabel(s[2], this.depthUnit); // s[2] is metres
       const w = label.length * 6;
       if (!this._place(x - w / 2, y - 5, w, 11)) continue;
       ctx.fillText(label, x, y + 3);
@@ -366,6 +422,17 @@ class Renderer {
     ctx.textAlign = "left";
     ctx.fillText(op.text, x + 4, y - 4);
   }
+}
+
+// Format a sounding (stored in metres) for display in the chosen unit, using
+// S-52-style precision (a decimal for shoal depths, whole numbers when deeper).
+function soundingLabel(metres, unit) {
+  let v = metres;
+  if (unit === "ft") v = metres * 3.280839895;
+  else if (unit === "fathom") v = metres * 0.5468066492;
+  if (unit === "ft") return Math.round(v).toString();         // feet: whole
+  if (unit === "fathom") return v < 11 ? v.toFixed(1) : Math.round(v).toString();
+  return v < 31 ? v.toFixed(1) : Math.round(v).toString();    // metres
 }
 
 function bandOf(name) {

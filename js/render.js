@@ -365,6 +365,8 @@ class Renderer {
 }
 
 const DASH = [6, 4], DOTT = [1, 3], EMPTY_DASH = [];
+/** Min squared screen-space edge length (px²) for path decimation; see _path(). */
+const MIN_SEG2 = 1;
 
 function bandOf(name) {
   const m = name.match(/^[A-Z]{2}(\d)/i);

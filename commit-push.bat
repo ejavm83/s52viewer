@@ -1,28 +1,31 @@
 @echo off
-:: commit-push.bat — 스테이징(git add -A) 후 커밋, origin으로 푸시
+:: commit-push.bat - git add -A, commit, push to origin
 ::
-:: 사용법
+:: Usage:
 ::   commit-push.bat
-::       → 커밋 메시지를 입력 프롬프트로 묻습니다.
-::   commit-push.bat 전체 메시지 한 줄
-::       → 예: commit-push.bat "fix: 파서 오류 수정"
-::   메시지에 & ^ | 등 특수문자가 있으면 큰따옴표로 감싸세요.
+::       Prompts for commit message.
+::   commit-push.bat your message here
+::       Example: commit-push.bat "fix: parser edge case"
+::   Use quotes if the message has & ^ | etc.
 ::
-:: Git 사용자 설정이 없으면 커밋이 거절됩니다. 한번 설정:
-::   git config --global user.name "이름"
-::   git config --global user.email "이메일"
+:: If commit fails with "tell me who you are", pick one:
+::   git config --global user.name "Your Name"
+::   git config --global user.email "you@example.com"
+:: Or set env vars for this run only (no git config written):
+::   set COMMIT_PUSH_NAME=Your Name
+::   set COMMIT_PUSH_EMAIL=you@example.com
 setlocal EnableExtensions
 cd /d "%~dp0" || exit /b 1
 
 where git >nul 2>&1
 if errorlevel 1 (
-  echo [오류] PATH에서 git.exe를 찾을 수 없습니다.
+  echo [ERROR] git.exe not found in PATH.
   exit /b 1
 )
 
 git rev-parse --is-inside-work-tree >nul 2>&1
 if errorlevel 1 (
-  echo [오류] Git 저장소가 아닙니다. ^(이 .bat과 같은 폴더에 .git이 있어야 합니다^)
+  echo [ERROR] Not a git repository. Put this .bat next to a .git folder.
   exit /b 1
 )
 
@@ -31,39 +34,46 @@ git status -sb
 echo.
 
 git diff HEAD --quiet 2>nul
-if errorlevel 1 (
-  if "%~1"=="" (
-    set /p "COMMIT_MSG=커밋 메시지: "
-  ) else (
-    set "COMMIT_MSG=%*"
-  )
-  if not defined COMMIT_MSG (
-    echo [중단] 커밋 메시지가 비어 있습니다.
-    exit /b 1
-  )
+if errorlevel 1 goto :have_local_changes
+echo No local changes to commit. Trying push only.
+echo.
+goto :git_push
 
-  echo === git add -A ===
-  git add -A
-  if errorlevel 1 exit /b 1
-
-  echo === git commit ===
-  git commit -m "%COMMIT_MSG%"
-  if errorlevel 1 (
-    echo [오류] 커밋에 실패했습니다. ^(변경 없음이거나 훅 실패 등^)
-    exit /b 1
-  )
-) else (
-  echo 커밋할 로컬 변경이 없습니다. 푸시만 시도합니다.
-  echo.
+:have_local_changes
+if "%~1"=="" goto :prompt_commit_msg
+set "COMMIT_MSG=%*"
+goto :after_commit_msg
+:prompt_commit_msg
+set /p "COMMIT_MSG=Commit message: "
+:after_commit_msg
+if not defined COMMIT_MSG (
+  echo [ABORT] Empty commit message.
+  exit /b 1
 )
 
+echo === git add -A ===
+git add -A
+if errorlevel 1 exit /b 1
+
+echo === git commit ===
+if defined COMMIT_PUSH_NAME if defined COMMIT_PUSH_EMAIL (
+  git -c "user.name=%COMMIT_PUSH_NAME%" -c "user.email=%COMMIT_PUSH_EMAIL%" commit -m "%COMMIT_MSG%"
+) else (
+  git commit -m "%COMMIT_MSG%"
+)
+if errorlevel 1 (
+  echo [ERROR] git commit failed: nothing to commit, hooks, or missing user.name/email.
+  exit /b 1
+)
+
+:git_push
 echo === git push ===
 git push
 if errorlevel 1 (
-  echo [오류] 푸시에 실패했습니다.
+  echo [ERROR] git push failed.
   exit /b 1
 )
 
 echo.
-echo 완료.
+echo Done.
 exit /b 0

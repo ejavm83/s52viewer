@@ -2,7 +2,7 @@ import { DDF } from "./iso8211.js";
 import { S57 } from "./s57.js";
 import { S52 } from "./s52.js";
 import { loadCatalog } from "./catalog.js";
-import { Renderer } from "./render.js?v=10";
+import { Renderer } from "./render.js?v=11";
 
 const ATLAS_BY_TABLE = {
   DAY_BRIGHT: "assets/rastersymbols-day.png",
@@ -255,6 +255,7 @@ async function init() {
   resize();
   if (isMobileLayout()) state.renderer.vp.fit(MOBILE_INITIAL_BOUNDS);
   else state.renderer.vp.fit(state.globalBounds);
+  clampVpScaleForEncOverview(idx);
   state.fitted = true;
   draw();
 
@@ -272,6 +273,26 @@ function globalBoundsOf(idx) {
     if (g.minY < minY) minY = g.minY; if (g.maxY > maxY) maxY = g.maxY;
   }
   return { minX, minY, maxX, maxY };
+}
+
+/**
+ * 원근간략화(scaleDisplay)일 때 전역 맞춤으로 너무 축소되면 표시 축척 분모(denom)가
+ * 모든 셀의 CSCL×scaleOutFactor를 넘겨 피처가 전부 생략될 수 있음.
+ * 인덱스에서 가장 개략인 도(max CSCL) 기준으로 최소 scale을 올려 개략도가 보이게 함.
+ */
+function clampVpScaleForEncOverview(grid) {
+  if (!state.renderer?.scaleDisplay || !grid?.length) return;
+  let maxCscl = 0;
+  for (const g of grid) {
+    if (g.cscl && Number.isFinite(g.cscl) && g.cscl > maxCscl) maxCscl = g.cscl;
+  }
+  if (maxCscl <= 0) return;
+  const vp = state.renderer.vp;
+  const phi = (vp.centerLat() * Math.PI) / 180;
+  const dpi = 96 / 0.0254;
+  const f = state.renderer.scaleOutFactor;
+  const minScale = (R_EARTH * Math.cos(phi) * dpi) / (maxCscl * f);
+  if (vp.scale < minScale) vp.scale = minScale;
 }
 
 function resize() {
@@ -497,7 +518,9 @@ document.getElementById("hideAll").addEventListener("click", () => {
   setStatus("모두 숨김");
 });
 document.getElementById("fitAll").addEventListener("click", () => {
-  state.renderer.vp.fit(state.globalBounds); draw();
+  state.renderer.vp.fit(state.globalBounds);
+  clampVpScaleForEncOverview(state.renderer.grid);
+  draw();
 });
 
 // ---- object-class panel: which S-57 classes the loaded cells contain, with

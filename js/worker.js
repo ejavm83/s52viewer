@@ -4,6 +4,7 @@
 import { DDF } from "./iso8211.js";
 import { S57 } from "./s57.js";
 import { loadCatalog } from "./catalog.js";
+import { projectFeature } from "./render.js";
 
 let catalogPromise = null;
 function getCatalog() {
@@ -21,7 +22,11 @@ self.onmessage = async (e) => {
   try {
     const catalog = await getCatalog();
     const chart = S57.build(DDF.parse(buffer), catalog);
-    // chart.features are plain objects/arrays -> structured-clonable as-is
+    // Project to Mercator (flat Float64Arrays) and drop the bulky lon/lat
+    // source arrays here, so the main thread receives the compact form and
+    // never holds the memory-heavy original (prevents out-of-memory with many
+    // cells loaded). The structured clone of typed arrays is cheap.
+    for (const f of chart.features) projectFeature(f);
     self.postMessage({ id, chart });
   } catch (err) {
     self.postMessage({ id, error: String(err && err.message || err) });

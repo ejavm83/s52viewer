@@ -141,50 +141,8 @@ class Renderer {
   // Precompute the Mercator-projected geometry, label anchor and bounding box
   // for a feature, once. Cached on the feature (projection never changes).
   _prep(feat) {
-    if (feat._pg !== undefined) return;
-    let minx = Infinity, miny = Infinity, maxx = -Infinity, maxy = -Infinity;
-    const touch = (mx, my) => {
-      if (mx < minx) minx = mx; if (mx > maxx) maxx = mx;
-      if (my < miny) miny = my; if (my > maxy) maxy = my;
-    };
-    let pg = null, ps = null;
-    const g = feat.geom;
-    if (g) {
-      if (g.type === "Point") {
-        const mx = mercX(g.coords[0]), my = mercY(g.coords[1]);
-        touch(mx, my);
-        pg = { type: "Point", anchor: [mx, my] };
-      } else {
-        const rings = [];
-        for (const ring of g.coords) {
-          const pr = new Array(ring.length);
-          for (let i = 0; i < ring.length; i++) {
-            const mx = mercX(ring[i][0]), my = mercY(ring[i][1]);
-            pr[i] = [mx, my]; touch(mx, my);
-          }
-          rings.push(pr);
-        }
-        let anchor = [0, 0];
-        const r0 = rings[0];
-        if (r0 && r0.length) {
-          anchor = g.type === "Area"
-            ? mercCentroid(r0)
-            : [r0[(r0.length / 2) | 0][0], r0[(r0.length / 2) | 0][1]];
-        }
-        pg = { type: g.type, rings, anchor };
-      }
-    }
-    if (feat.soundings) {
-      ps = new Array(feat.soundings.length);
-      for (let i = 0; i < feat.soundings.length; i++) {
-        const s = feat.soundings[i];
-        const mx = mercX(s[0]), my = mercY(s[1]);
-        ps[i] = [mx, my, s[2]]; touch(mx, my);
-      }
-    }
-    feat._pg = pg;
-    feat._ps = ps;
-    feat._bbox = minx === Infinity ? null : [minx, miny, maxx, maxy];
+    if (feat._pg !== undefined) return; // already projected (by worker or earlier)
+    projectFeature(feat); // fallback path (main-thread parse); workers pre-project
   }
 
   // The loaded cell whose compilation scale (CSCL) is nearest the current view
@@ -557,7 +515,7 @@ class Renderer {
     if (alpha !== 1) ctx.globalAlpha = alpha;
     ctx.fillStyle = color;
     ctx.beginPath();
-    for (const ring of rings) { if (ring.length >= 3) this._path(ring); }
+    for (const ring of rings) { if (ring.length >= 6) this._path(ring); } // >=3 points (flat)
     ctx.fill("evenodd");
     if (alpha !== 1) ctx.globalAlpha = 1;
   }
@@ -585,15 +543,16 @@ class Renderer {
   // Build a path, decimating vertices that land within ~1px of the previous
   // one at the current scale (invisible detail). The final vertex is always
   // emitted so rings stay closed.
-  _path(pts) {
+  // arr: flat Float64Array [x0,y0,x1,y1,…] in Mercator units.
+  _path(arr) {
     const ctx = this.ctx, vp = this.vp;
-    const n = pts.length;
-    let lx = vp.sx(pts[0][0]), ly = vp.sy(pts[0][1]);
+    const n = arr.length;
+    let lx = vp.sx(arr[0]), ly = vp.sy(arr[1]);
     ctx.moveTo(lx, ly);
-    for (let i = 1; i < n; i++) {
-      const x = vp.sx(pts[i][0]), y = vp.sy(pts[i][1]);
+    for (let i = 2; i < n; i += 2) {
+      const x = vp.sx(arr[i]), y = vp.sy(arr[i + 1]);
       const dx = x - lx, dy = y - ly;
-      if (i === n - 1 || dx * dx + dy * dy >= MIN_SEG2) {
+      if (i === n - 2 || dx * dx + dy * dy >= MIN_SEG2) {
         ctx.lineTo(x, y);
         lx = x; ly = y;
       }
@@ -635,10 +594,10 @@ class Renderer {
     ctx.fillStyle = this.s52.color("SNDG2");
     ctx.font = "10px sans-serif";
     ctx.textAlign = "center";
-    for (const s of ps) {
-      const x = vp.sx(s[0]), y = vp.sy(s[1]);
+    for (let i = 0; i < ps.length; i += 3) { // flat [x,y,depth,…]
+      const x = vp.sx(ps[i]), y = vp.sy(ps[i + 1]);
       if (x < -20 || y < -20 || x > this.canvas.width + 20 || y > this.canvas.height + 20) continue;
-      const label = soundingLabel(s[2], this.depthUnit); // s[2] is metres
+      const label = soundingLabel(ps[i + 2], this.depthUnit); // metres
       const w = label.length * 6;
       if (!this._place(x - w / 2, y - 5, w, 11)) continue;
       ctx.fillText(label, x, y + 3);
@@ -683,11 +642,63 @@ const BAND_COLORS = {
   6: "rgba(155,89,182,0.9)",
 };
 
-function mercCentroid(ring) {
-  let x = 0, y = 0;
-  for (const p of ring) { x += p[0]; y += p[1]; }
-  const n = ring.length || 1;
-  return [x / n, y / n];
+// Project a feature's lon/lat geometry into Mercator and store it compactly as
+// flat Float64Arrays (x,y,…), then DROP the original lon/lat arrays to save a
+// large amount of memory (array-of-[x,y] objects cost ~10× a typed array, and
+// keeping both the source and projected copies doubled it). Run once per
+// feature — in the worker at load time, or here as the main-thread fallback.
+function projectFeature(feat) {
+  let minx = Infinity, miny = Infinity, maxx = -Infinity, maxy = -Infinity;
+  let pg = null, ps = null;
+  const g = feat.geom;
+  if (g && g.coords) {
+    if (g.type === "Point") {
+      const mx = mercX(g.coords[0]), my = mercY(g.coords[1]);
+      minx = maxx = mx; miny = maxy = my;
+      pg = { type: "Point", anchor: [mx, my] };
+    } else {
+      const rings = [];
+      for (const ring of g.coords) {
+        const arr = new Float64Array(ring.length * 2);
+        for (let i = 0; i < ring.length; i++) {
+          const mx = mercX(ring[i][0]), my = mercY(ring[i][1]);
+          arr[2 * i] = mx; arr[2 * i + 1] = my;
+          if (mx < minx) minx = mx; if (mx > maxx) maxx = mx;
+          if (my < miny) miny = my; if (my > maxy) maxy = my;
+        }
+        rings.push(arr);
+      }
+      const r0 = rings[0]; let anchor = [0, 0];
+      if (r0 && r0.length) {
+        if (g.type === "Area") {
+          let sx = 0, sy = 0; const n = r0.length / 2;
+          for (let i = 0; i < r0.length; i += 2) { sx += r0[i]; sy += r0[i + 1]; }
+          anchor = [sx / n, sy / n];
+        } else {
+          const m = (((r0.length / 2) >> 1)) * 2;
+          anchor = [r0[m], r0[m + 1]];
+        }
+      }
+      pg = { type: g.type, rings, anchor };
+    }
+  }
+  if (feat.soundings && feat.soundings.length) {
+    ps = new Float64Array(feat.soundings.length * 3);
+    for (let i = 0; i < feat.soundings.length; i++) {
+      const s = feat.soundings[i];
+      const mx = mercX(s[0]), my = mercY(s[1]);
+      ps[3 * i] = mx; ps[3 * i + 1] = my; ps[3 * i + 2] = s[2];
+      if (mx < minx) minx = mx; if (mx > maxx) maxx = mx;
+      if (my < miny) miny = my; if (my > maxy) maxy = my;
+    }
+  }
+  feat._pg = pg;
+  feat._ps = ps;
+  feat._bbox = minx === Infinity ? null : [minx, miny, maxx, maxy];
+  // keep a tiny truthy geom marker so the "has content" checks still pass
+  if (feat.geom) feat.geom = { type: feat.geom.type };
+  else if (ps) feat.geom = { type: "Sounding" };
+  feat.soundings = null;
 }
 
-export { Renderer, Viewport };
+export { Renderer, Viewport, projectFeature, mercX, mercY };

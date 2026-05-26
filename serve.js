@@ -1,5 +1,6 @@
 // Zero-dependency static file server for the S-52 viewer.
 // Usage:  node serve.js [port]
+//   Port: CLI 인자 > 환경 변수 PORT > 기본 8000
 // Binds 0.0.0.0 so other machines on the LAN can open http://<this-host-ip>:<port>/
 import http from "node:http";
 import os from "node:os";
@@ -9,7 +10,15 @@ import { fileURLToPath } from "node:url";
 import { buildCellIndex, listEncCellNames } from "./lib/cell-index.mjs";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
-const port = parseInt(process.argv[2], 10) || 8080;
+const DEFAULT_PORT = 8000;
+const fromArg = parseInt(process.argv[2], 10);
+const fromEnv = parseInt(process.env.PORT ?? "", 10);
+const port =
+  Number.isFinite(fromArg) && fromArg > 0 && fromArg <= 65535
+    ? fromArg
+    : Number.isFinite(fromEnv) && fromEnv > 0 && fromEnv <= 65535
+      ? fromEnv
+      : DEFAULT_PORT;
 
 const MIME = {
   ".html": "text/html; charset=utf-8",

@@ -57,6 +57,7 @@ class Viewport {
   }
   fit(bounds) {
     const w = this.canvas.width, h = this.canvas.height;
+    if (w < 1 || h < 1) return;
     const x0 = mercX(bounds.minX), x1 = mercX(bounds.maxX);
     const y0 = mercY(bounds.minY), y1 = mercY(bounds.maxY);
     const dx = x1 - x0 || 1e-4, dy = y1 - y0 || 1e-4;
@@ -222,6 +223,7 @@ class Renderer {
     this._labelBoxes = [];
     /** 통항·조류 방향 화살표 디클러터: 버킷(28 px 격자) → 해당 버킷에 배치된 점들의 [x,y,...] */
     this._flowArrowGrid = new Map();
+    this._pointSymbolGrid = new Map();
     const denom = vp.scaleDenominator();
     const table = this.s52.currentTable;
     // visible Mercator window for culling (small margin)
@@ -280,6 +282,7 @@ class Renderer {
 
     // pass 1: area fills
     for (const r of resolved) {
+      if (ENC_BOUNDARY_WITH_GRID.has(r.feat.acronym)) continue; // M_COVR/M_CSCL: 그리드 오버레이가 대신 표현
       const pg = r.feat._pg;
       if (!pg || pg.type !== "Area") continue;
       for (const op of r.ops) {
@@ -292,12 +295,11 @@ class Renderer {
     // handful of draw calls instead of one beginPath/stroke each.
     const lineGroups = new Map(); // "color|width|style" -> {op, rings:[...]}
     for (const r of resolved) {
+      if (ENC_BOUNDARY_WITH_GRID.has(r.feat.acronym)) continue; // M_COVR/M_CSCL: 검정 윤곽 제거
       const pg = r.feat._pg;
       if (!pg || pg.type === "Point") continue;
       for (const op of r.ops) {
         if (op.op !== "LS") continue;
-        // 격자 ON일 때만 포함되는 M_COVR/M_CSCL — DATCVR가 CHBLK 윤곽을 내어 UI 격자와 겹친 검정 테두리가 된다.
-        if (ENC_BOUNDARY_WITH_GRID.has(r.feat.acronym)) continue;
         const key = op.color + "|" + (op.width || 1) + "|" + (op.style || "");
         let grp = lineGroups.get(key);
         if (!grp) { grp = { op, rings: [] }; lineGroups.set(key, grp); }
@@ -519,16 +521,16 @@ class Renderer {
     const ww = Math.abs(x1[0] - x0[0]), hh = Math.abs(x1[1] - x0[1]);
     if (ww < 3 && hh < 3) return;
     if (x + ww < 0 || y + hh < 0 || x > this.canvas.width || y > this.canvas.height) return;
+    // 포커스 셀만 테두리 표시; 나머지 셀은 테두리 없이 배경 채움+라벨만
     if (focused) {
       ctx.strokeStyle = "rgba(255,255,255,0.95)";
-      ctx.lineWidth = 5;
+      ctx.lineWidth = 4;
       ctx.setLineDash([]);
       ctx.strokeRect(x, y, ww, hh);
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(x, y, ww, hh);
     }
-    ctx.lineWidth = focused ? 3 : on ? 2 : 1;
-    ctx.strokeStyle = col;
-    ctx.setLineDash(focused || on ? [] : [4, 3]);
-    ctx.strokeRect(x, y, ww, hh);
     if (on) { ctx.fillStyle = col.replace(/[\d.]+\)$/, "0.06)"); ctx.fillRect(x, y, ww, hh); }
     if (ww > 36 && hh > 14) {
       const label = g.name.replace(/\.000$/i, "");
@@ -643,6 +645,30 @@ class Renderer {
   _symbolFeature(feat, symName, rot) {
     const a = feat._pg && feat._pg.anchor;
     if (!a) return;
+    // ── 다중 축척 셀 중첩 심볼 제거 ──
+    // 동일 심볼이 화면상 PT_DEDUP_PX 이내에 이미 그려졌으면 건너뛴다.
+    // 서로 다른 축척의 ENC 셀이 같은 항행보조시설(부이·등대·비컨 등)을 중복
+    // 수록할 때, 좌표 정밀도 차이로 ~수 픽셀 어긋나 박히는 잔상까지 잡는다.
+    {
+      const PT_DEDUP_PX = 8;
+      const sx = this.vp.sx(a[0]), sy = this.vp.sy(a[1]);
+      const min2 = PT_DEDUP_PX * PT_DEDUP_PX;
+      const bx = Math.floor(sx / PT_DEDUP_PX), by = Math.floor(sy / PT_DEDUP_PX);
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const arr = this._pointSymbolGrid.get(`${symName}|${bx + dx},${by + dy}`);
+          if (!arr) continue;
+          for (let i = 0; i < arr.length; i += 2) {
+            const ddx = sx - arr[i], ddy = sy - arr[i + 1];
+            if (ddx * ddx + ddy * ddy < min2) return;
+          }
+        }
+      }
+      const key = `${symName}|${bx},${by}`;
+      let arr = this._pointSymbolGrid.get(key);
+      if (!arr) { arr = []; this._pointSymbolGrid.set(key, arr); }
+      arr.push(sx, sy);
+    }
     if (this.declutter && FLOW_ARROW_SYMBOL_RE.test(symName || "")) {
       const x = this.vp.sx(a[0]), y = this.vp.sy(a[1]);
       const g = FLOW_ARROW_MIN_DIST_PX;

@@ -2,7 +2,7 @@ import { DDF } from "./iso8211.js";
 import { S57 } from "./s57.js";
 import { S52 } from "./s52.js";
 import { loadCatalog } from "./catalog.js";
-import { Renderer } from "./render.js?v=14";
+import { Renderer } from "./render.js?v=18";
 
 const ATLAS_BY_TABLE = {
   DAY_BRIGHT: "assets/rastersymbols-day.png",
@@ -151,12 +151,28 @@ function setStatus(t) { statusEl.textContent = t; }
 
 function setMapLoading(msg) {
   if (!mapLoadingEl) return;
+  mapLoadingEl.classList.remove("map-load-error");
   if (!msg) {
     mapLoadingEl.hidden = true;
     mapLoadingEl.textContent = "로딩 중…";
   } else {
     mapLoadingEl.hidden = false;
     mapLoadingEl.textContent = msg;
+  }
+}
+
+/** 모바일 등에서 #status가 숨겨져 있을 때 사용자에게 보이는 오류 */
+function showInitError(msg) {
+  const text = msg ? `시작 실패: ${msg}` : "시작 실패";
+  console.error(text);
+  if (mapLoadingEl) {
+    mapLoadingEl.classList.add("map-load-error");
+    mapLoadingEl.hidden = false;
+    mapLoadingEl.textContent = text;
+  } else if (statusEl) {
+    statusEl.textContent = text;
+  } else {
+    window.alert(text);
   }
 }
 
@@ -192,12 +208,13 @@ async function init() {
   }
   state.globalBounds = globalBoundsOf(idx);
   rebuildCellList();
-  resize();
+  await waitForNonemptyCanvas();
+  syncCanvasPixelSizeFromContainer();
   if (isMobileLayout()) state.renderer.vp.fit(MOBILE_INITIAL_BOUNDS);
   else state.renderer.vp.fit(state.globalBounds);
   clampVpScaleForEncOverview(idx);
   state.fitted = true;
-  draw();
+  resize();
 
   if (isMobileLayout()) {
     setStatus(`준비 완료 — 셀 ${idx.length}개. 지도를 움직이면 해당 화면 영역의 ENC만 불러옵니다.`);
@@ -235,14 +252,66 @@ function clampVpScaleForEncOverview(grid) {
   if (vp.scale < minScale) vp.scale = minScale;
 }
 
-function resize() {
+function syncCanvasPixelSizeFromContainer() {
   const wrap = canvas.parentElement;
-  canvas.width = wrap.clientWidth;
-  canvas.height = wrap.clientHeight;
+  if (!wrap) return;
+  const w = Math.max(0, Math.round(wrap.clientWidth));
+  const h = Math.max(0, Math.round(wrap.clientHeight));
+  canvas.width = w;
+  canvas.height = h;
+}
+
+/** 모바일·내부망 등에서 첫 레이아웃 전 캔버스가 0×0일 때 fit/load가 깨지지 않도록 대기 */
+async function waitForNonemptyCanvas(maxAttempts = 72) {
+  for (let i = 0; i < maxAttempts; i++) {
+    syncCanvasPixelSizeFromContainer();
+    if (canvas.width >= 2 && canvas.height >= 2) return true;
+    await new Promise((r) => requestAnimationFrame(r));
+  }
+  return canvas.width >= 2 && canvas.height >= 2;
+}
+
+let _fillViewportEncTimer = null;
+/** 첫 표시 후 캔버스 크기가 생겼는데 아직 ENC가 0개면 화면 겹침 셀만 보충 로드 */
+function scheduleMaybeFillViewportEnc() {
+  clearTimeout(_fillViewportEncTimer);
+  _fillViewportEncTimer = setTimeout(() => void maybeFillViewportEncIfEmpty(), 100);
+}
+
+async function maybeFillViewportEncIfEmpty() {
+  _fillViewportEncTimer = null;
+  if (!state.renderer?.grid?.length || !state.fitted) return;
+  if (canvas.width < 2 || canvas.height < 2) return;
+  const vis = [...state.renderer.cells.values()].filter((c) => c.visible).length;
+  if (vis > 0) return;
+  const names = namesIntersectingViewport();
+  if (!names.length) return;
+  await loadMany(names, { mobileLabel: "화면 영역 ENC" });
+}
+
+function resize() {
+  syncCanvasPixelSizeFromContainer();
   // 첫 뷰 맞춤은 init() / openFiles()에서만 수행 (모바일 전역 fit 덮어쓰기 방지)
   draw();
+  scheduleMaybeFillViewportEnc();
 }
 window.addEventListener("resize", resize);
+window.addEventListener("orientationchange", () => {
+  requestAnimationFrame(() => resize());
+});
+
+const _stageEl = canvas.parentElement;
+if (_stageEl && typeof ResizeObserver !== "undefined") {
+  let _roTick = null;
+  const ro = new ResizeObserver(() => {
+    if (_roTick != null) cancelAnimationFrame(_roTick);
+    _roTick = requestAnimationFrame(() => {
+      _roTick = null;
+      resize();
+    });
+  });
+  ro.observe(_stageEl);
+}
 
 let _rafPending = false;
 function draw() {
@@ -566,6 +635,7 @@ async function flushMobileViewportSync() {
 function namesIntersectingViewport() {
   const vp = state.renderer.vp;
   const w = canvas.width, h = canvas.height;
+  if (w < 1 || h < 1) return [];
   const targets = [];
   for (const g of state.renderer.grid) {
     const [x0, y0] = vp.project(g.minX, g.maxY);
@@ -1228,10 +1298,17 @@ function pickCell(mx, my) {
 
 window.s52app = { state, loadFromUrl, setCellVisible, draw };
 
-init().then(async () => {
-  const cell = new URLSearchParams(location.search).get("cell");
-  if (cell) await loadFromUrl(cell);
-  // 모바일: 초기 화면에서 겹치는 셀을 일괄 로드하면 셀이 많을 때 끝없이 받는 것처럼 보임.
-  // 팬·줌(또는 ?cell=)으로 움직일 때만 `scheduleMobileViewportSync` 경로에서 로드.
-  else if (!isMobileLayout()) await loadMany(namesIntersectingViewport(), { mobileLabel: "화면 영역 ENC" });
-});
+init()
+  .then(async () => {
+    const cell = new URLSearchParams(location.search).get("cell");
+    if (cell) {
+      await loadFromUrl(cell);
+      return;
+    }
+    await loadMany(namesIntersectingViewport(), { mobileLabel: "화면 영역 ENC" });
+    scheduleMaybeFillViewportEnc();
+  })
+  .catch((err) => {
+    const msg = err && err.message ? err.message : String(err);
+    showInitError(msg);
+  });

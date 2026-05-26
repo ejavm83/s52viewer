@@ -197,6 +197,12 @@
       background: rgba(0,0,0,.72); color: #fff; font-size: 13px;
       text-align: center; pointer-events: none;
     }
+    #map-loading.map-load-error:not([hidden]) {
+      background: rgba(120, 20, 20, .92);
+      pointer-events: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
   }
 </style>
 </head>
@@ -295,6 +301,6 @@
     <div id="app-credit">제작: 지엠티 김길용 수석 · v0.0.6 (2026.05.27)</div>
   </div>
   <div id="map-loading" hidden>로딩 중…</div>
-  <script type="module" src="js/main.js?v=21"></script>
+  <script type="module" src="js/main.js?v=26"></script>
 </body>
 </html>

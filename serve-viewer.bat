@@ -3,7 +3,7 @@
 ::
 :: Usage:
 ::   serve-viewer.bat
-::       기본 시작 포트 8080부터 비어 있는 포트를 찾습니다.
+::       기본 시작 포트 8000부터 비어 있는 포트를 찾습니다.
 ::   serve-viewer.bat 3000
 ::       3000부터 순차로 탐색합니다.
 ::
@@ -17,7 +17,7 @@ if errorlevel 1 (
   exit /b 1
 )
 
-set "STARTPORT=8080"
+set "STARTPORT=8000"
 if not "%~1"=="" set "STARTPORT=%~1"
 
 set /a PORT=%STARTPORT%

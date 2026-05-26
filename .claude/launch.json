@@ -4,8 +4,8 @@
     {
       "name": "s52-viewer",
       "runtimeExecutable": "node",
-      "runtimeArgs": ["serve.js", "8080"],
-      "port": 8080
+      "runtimeArgs": ["serve.js", "8000"],
+      "port": 8000
     }
   ]
 }

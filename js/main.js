@@ -2,7 +2,7 @@ import { DDF } from "./iso8211.js";
 import { S57 } from "./s57.js";
 import { S52 } from "./s52.js";
 import { loadCatalog } from "./catalog.js";
-import { Renderer } from "./render.js?v=7";
+import { Renderer } from "./render.js?v=9";
 
 const ATLAS_BY_TABLE = {
   DAY_BRIGHT: "assets/rastersymbols-day.png",
@@ -10,6 +10,14 @@ const ATLAS_BY_TABLE = {
   DAY_WHITEBACK: "assets/rastersymbols-day.png",
   DUSK: "assets/rastersymbols-dusk.png",
   NIGHT: "assets/rastersymbols-dark.png",
+};
+
+/** 모바일 초기 뷰: 부산항·가덕도 일대 (데스크톱 캡처 화면과 유사한 위치·축척) */
+const MOBILE_INITIAL_BOUNDS = {
+  minX: 128.92,
+  maxX: 129.38,
+  minY: 34.96,
+  maxY: 35.32,
 };
 
 const state = {
@@ -76,7 +84,8 @@ async function init() {
   state.globalBounds = globalBoundsOf(idx);
   buildCellList(idx);
   resize();
-  state.renderer.vp.fit(state.globalBounds);
+  if (isMobileLayout()) state.renderer.vp.fit(MOBILE_INITIAL_BOUNDS);
+  else state.renderer.vp.fit(state.globalBounds);
   state.fitted = true;
   draw();
 
@@ -100,10 +109,7 @@ function resize() {
   const wrap = canvas.parentElement;
   canvas.width = wrap.clientWidth;
   canvas.height = wrap.clientHeight;
-  if (!state.fitted && state.globalBounds) {
-    state.renderer.vp.fit(state.globalBounds);
-    state.fitted = true;
-  }
+  // 첫 뷰 맞춤은 init() / openFile()에서만 수행 (모바일 전역 fit 덮어쓰기 방지)
   draw();
 }
 window.addEventListener("resize", resize);
@@ -217,7 +223,15 @@ function buildCellList(idx) {
     row.append(cb, dot, txt);
     row.addEventListener("click", () => {
       state.renderer.gridFocusName = g.name;
+      state.renderer.vp.fit({
+        minX: g.minX,
+        minY: g.minY,
+        maxX: g.maxX,
+        maxY: g.maxY,
+      });
+      state.fitted = true;
       draw();
+      if (isMobileLayout()) scheduleMobileViewportSync();
     });
     frag.appendChild(row);
     rows.set(g.name, { checkbox: cb, el: row });
@@ -241,15 +255,20 @@ document.getElementById("filter").addEventListener("input", (e) => {
   for (const [name, r] of rows) r.el.style.display = name.toUpperCase().includes(q) ? "" : "none";
 });
 
-/** 모바일: 팬·줌이 멈춘 뒤 화면과 겹치는 셀만 백그라운드 로드(디바운스) */
+/** 모바일: 팬·줌이 멈춘 뒤 화면과 겹치는 셀만 로드. 뷰 밖 셀은 표시 끔(메모리는 유지). */
 let _mobileVpSyncTimer = null;
 function scheduleMobileViewportSync() {
   if (!isMobileLayout() || !state.renderer) return;
   clearTimeout(_mobileVpSyncTimer);
   _mobileVpSyncTimer = setTimeout(() => {
     _mobileVpSyncTimer = null;
-    const names = namesIntersectingViewport();
-    void loadMany(names, { mobileLabel: "화면 영역 ENC" });
+    const keep = new Set(namesIntersectingViewport());
+    for (const cell of state.renderer.cells.values()) {
+      if (keep.has(cell.name)) continue;
+      cell.visible = false;
+      syncRow(cell.name);
+    }
+    void loadMany([...keep], { mobileLabel: "화면 영역 ENC" });
   }, 220);
 }
 

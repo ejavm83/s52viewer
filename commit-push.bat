@@ -33,8 +33,9 @@ echo === git status ===
 git status -sb
 echo.
 
-git diff HEAD --quiet 2>nul
-if errorlevel 1 goto :have_local_changes
+:: git diff HEAD ignores untracked files; use porcelain so ?? files still count.
+git status --porcelain | findstr /r "." >nul 2>&1
+if not errorlevel 1 goto :have_local_changes
 echo No local changes to commit. Trying push only.
 echo.
 goto :git_push

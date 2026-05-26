@@ -33,8 +33,6 @@ const canvas = document.getElementById("chart");
 const statusEl = document.getElementById("status");
 const listEl = document.getElementById("celllist");
 const mapLoadingEl = document.getElementById("map-loading");
-const minimapCanvas = document.getElementById("minimap");
-const minimapWrap = document.getElementById("minimap-wrap");
 const scaleBarLabel = document.getElementById("scale-bar-label");
 const scaleBarTrack = document.getElementById("scale-bar-track");
 const sidebarEl = document.getElementById("sidebar");
@@ -107,14 +105,6 @@ if (sidebarResizerEl && sidebarEl) {
 const R_EARTH = 6378137;
 const NM = 1852;
 
-function mercX(lonDeg) {
-  return (lonDeg * Math.PI) / 180;
-}
-function mercY(latDeg) {
-  const lat = (latDeg * Math.PI) / 180;
-  return Math.log(Math.tan(Math.PI / 4 + lat / 2));
-}
-
 /** 뷰포트와 동일한 공식: 화면 1픽셀당 지상 거리(m) */
 function metresPerPixel(vp) {
   const phi = (vp.centerLat() * Math.PI) / 180;
@@ -151,122 +141,6 @@ function updateScaleBar() {
   const barPx = Math.max(28, Math.min(maxPx, snapM / mpp));
   scaleBarLabel.textContent = formatScaleLabel(snapM);
   scaleBarTrack.style.width = `${barPx}px`;
-}
-
-function syncMinimapSize() {
-  if (!minimapCanvas || !minimapWrap) return;
-  const dpr = window.devicePixelRatio || 1;
-  const w = Math.max(1, Math.round(minimapWrap.clientWidth * dpr));
-  const h = Math.max(1, Math.round(minimapWrap.clientHeight * dpr));
-  if (minimapCanvas.width !== w || minimapCanvas.height !== h) {
-    minimapCanvas.width = w;
-    minimapCanvas.height = h;
-  }
-}
-
-/**
- * 전역 범위를 미니맵 캔버스에 맞춤.
- * @returns {{ sx:(mx:number)=>number, sy:(my:number)=>number, inv:(px:number,py:number)=>[number,number], w:number, h:number } | null}
- */
-function minimapTransform(gb, padPx) {
-  if (!gb || !minimapCanvas) return null;
-  const w = minimapCanvas.width;
-  const h = minimapCanvas.height;
-  const mx0 = mercX(gb.minX);
-  const mx1 = mercX(gb.maxX);
-  const my0 = mercY(gb.minY);
-  const my1 = mercY(gb.maxY);
-  const minMx = Math.min(mx0, mx1);
-  const maxMx = Math.max(mx0, mx1);
-  const minMy = Math.min(my0, my1);
-  const maxMy = Math.max(my0, my1);
-  const dx = maxMx - minMx || 1e-6;
-  const dy = maxMy - minMy || 1e-6;
-  const innerW = w - 2 * padPx;
-  const innerH = h - 2 * padPx;
-  const scale = Math.min(innerW / dx, innerH / dy);
-  const cx = (minMx + maxMx) / 2;
-  const cy = (minMy + maxMy) / 2;
-  const ox = w / 2;
-  const oy = h / 2;
-  return {
-    w,
-    h,
-    sx: (mx) => ox + (mx - cx) * scale,
-    sy: (my) => oy - (my - cy) * scale,
-    inv(px, py) {
-      return [cx + (px - ox) / scale, cy - (py - oy) / scale];
-    },
-  };
-}
-
-function updateMinimap() {
-  if (!state.renderer || !minimapCanvas || !state.globalBounds) return;
-  syncMinimapSize();
-  const gb = state.globalBounds;
-  const dpr = window.devicePixelRatio || 1;
-  const pad = Math.round(6 * dpr);
-  const tf = minimapTransform(gb, pad);
-  if (!tf) return;
-  const ctx = minimapCanvas.getContext("2d");
-  const { w, h } = tf;
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.clearRect(0, 0, w, h);
-  ctx.fillStyle = "rgba(218, 235, 248, 0.97)";
-  ctx.fillRect(0, 0, w, h);
-
-  for (const g of state.renderer.grid) {
-    const x0 = tf.sx(mercX(g.minX));
-    const y0 = tf.sy(mercY(g.maxY));
-    const x1 = tf.sx(mercX(g.maxX));
-    const y1 = tf.sy(mercY(g.minY));
-    const x = Math.min(x0, x1);
-    const y = Math.min(y0, y1);
-    const rw = Math.abs(x1 - x0);
-    const rh = Math.abs(y1 - y0);
-    const cell = state.renderer.cells.get(g.name);
-    const vis = cell?.visible;
-    ctx.fillStyle = vis ? "rgba(52, 152, 219, 0.32)" : "rgba(255,255,255,0.08)";
-    ctx.fillRect(x, y, rw, rh);
-    ctx.strokeStyle = vis ? "rgba(32, 102, 148, 0.55)" : "rgba(26, 37, 48, 0.2)";
-    ctx.lineWidth = 1 * dpr;
-    ctx.strokeRect(x + 0.5, y + 0.5, Math.max(0, rw - 1), Math.max(0, rh - 1));
-  }
-
-  const vp = state.renderer.vp;
-  const mw = canvas.width;
-  const mh = canvas.height;
-  const corners = [
-    vp.mercFromScreen(0, 0),
-    vp.mercFromScreen(mw, 0),
-    vp.mercFromScreen(mw, mh),
-    vp.mercFromScreen(0, mh),
-  ];
-  let minPx = Infinity;
-  let minPy = Infinity;
-  let maxPx = -Infinity;
-  let maxPy = -Infinity;
-  for (const [mx, my] of corners) {
-    const px = tf.sx(mx);
-    const py = tf.sy(my);
-    if (px < minPx) minPx = px;
-    if (py < minPy) minPy = py;
-    if (px > maxPx) maxPx = px;
-    if (py > maxPy) maxPy = py;
-  }
-  ctx.strokeStyle = "rgba(192, 57, 43, 0.92)";
-  ctx.lineWidth = 2 * dpr;
-  ctx.setLineDash([]);
-  ctx.strokeRect(minPx, minPy, maxPx - minPx, maxPy - minPy);
-
-  ctx.strokeStyle = "rgba(26, 37, 48, 0.45)";
-  ctx.lineWidth = 1 * dpr;
-  ctx.strokeRect(0.5, 0.5, w - 1, h - 1);
-}
-
-function updateMapOverlays() {
-  updateScaleBar();
-  updateMinimap();
 }
 
 function isMobileLayout() {
@@ -317,7 +191,7 @@ async function init() {
     });
   }
   state.globalBounds = globalBoundsOf(idx);
-  buildCellList(idx);
+  rebuildCellList();
   resize();
   if (isMobileLayout()) state.renderer.vp.fit(MOBILE_INITIAL_BOUNDS);
   else state.renderer.vp.fit(state.globalBounds);
@@ -365,32 +239,10 @@ function resize() {
   const wrap = canvas.parentElement;
   canvas.width = wrap.clientWidth;
   canvas.height = wrap.clientHeight;
-  syncMinimapSize();
   // 첫 뷰 맞춤은 init() / openFiles()에서만 수행 (모바일 전역 fit 덮어쓰기 방지)
   draw();
 }
 window.addEventListener("resize", resize);
-
-if (minimapWrap) {
-  minimapWrap.addEventListener("click", (e) => {
-    if (!state.renderer?.vp || !state.globalBounds) return;
-    const cvs = minimapCanvas;
-    if (!cvs) return;
-    const rect = cvs.getBoundingClientRect();
-    if (!rect.width || !rect.height) return;
-    const dpr = window.devicePixelRatio || 1;
-    syncMinimapSize();
-    const tf = minimapTransform(state.globalBounds, Math.round(6 * dpr));
-    if (!tf) return;
-    const px = ((e.clientX - rect.left) / rect.width) * cvs.width;
-    const py = ((e.clientY - rect.top) / rect.height) * cvs.height;
-    const [mx, my] = tf.inv(px, py);
-    state.renderer.vp.cx = mx;
-    state.renderer.vp.cy = my;
-    draw();
-    if (isMobileLayout()) scheduleMobileViewportSync();
-  });
-}
 
 let _rafPending = false;
 function draw() {
@@ -399,7 +251,8 @@ function draw() {
   requestAnimationFrame(() => {
     _rafPending = false;
     state.renderer.render();
-    updateMapOverlays();
+    updateScaleBar();
+    applyCellListFilter();
   });
 }
 
@@ -483,33 +336,167 @@ async function setCellVisible(name, on, refit) {
   refreshObjects();
 }
 
-// ---- cell list UI ----
+// ---- cell list UI (경로 `/` 기준 트리: 폴더 선택·드롭 시 상위 폴더 아래에 셀 배치) ----
 const rows = new Map(); // name -> {checkbox, el}
-function buildCellList(idx) {
-  const sorted = [...idx].sort((a, b) => a.name.localeCompare(b.name));
-  const frag = document.createDocumentFragment();
-  for (const g of sorted) {
-    const row = document.createElement("label");
-    row.className = "cellrow";
-    const cb = document.createElement("input");
-    cb.type = "checkbox";
-    cb.addEventListener("change", () => setCellVisible(g.name, cb.checked, false));
-    const dot = document.createElement("span");
-    dot.className = "dot";
-    dot.style.background = bandColor(g.name);
-    const txt = document.createElement("span");
-    txt.className = "cellname";
-    txt.textContent = g.name.replace(/\.000$/i, "");
-    txt.title = `${g.name} — 1:${g.cscl || "?"}  [${g.minX.toFixed(2)},${g.minY.toFixed(2)}]→[${g.maxX.toFixed(2)},${g.maxY.toFixed(2)}]`;
-    row.append(cb, dot, txt);
-    row.addEventListener("click", () => {
-      focusViewportToCellName(g.name);
-      setObjScopeTo(g.name); // scope the object panel to the clicked cell
-    });
-    frag.appendChild(row);
-    rows.set(g.name, { checkbox: cb, el: row });
+
+function pathTreeRoot() {
+  return { subs: new Map(), leaves: [] };
+}
+
+function addGridEntryToPathTree(root, g) {
+  const parts = g.name.replace(/\\/g, "/").split("/").filter((s) => s.length > 0);
+  let cur = root;
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i];
+    if (i === parts.length - 1) {
+      cur.leaves.push({ segment: p, g });
+    } else {
+      let next = cur.subs.get(p);
+      if (!next) {
+        next = pathTreeRoot();
+        cur.subs.set(p, next);
+      }
+      cur = next;
+    }
   }
+}
+
+function countCellsUnderPathNode(node) {
+  let n = node.leaves.length;
+  for (const ch of node.subs.values()) n += countCellsUnderPathNode(ch);
+  return n;
+}
+
+function leafFileName(cellKey) {
+  const s = cellKey.replace(/\\/g, "/");
+  const i = s.lastIndexOf("/");
+  return i >= 0 ? s.slice(i + 1) : s;
+}
+
+function makeCellListRow(g) {
+  const row = document.createElement("label");
+  row.className = "cellrow";
+  const cb = document.createElement("input");
+  cb.type = "checkbox";
+  cb.addEventListener("change", () => setCellVisible(g.name, cb.checked, false));
+  const dot = document.createElement("span");
+  dot.className = "dot";
+  dot.style.background = bandColor(g.name);
+  const txt = document.createElement("span");
+  txt.className = "cellname";
+  const leaf = leafFileName(g.name);
+  txt.textContent = leaf.replace(/\.000$/i, "");
+  txt.title = `${g.name} — 1:${g.cscl || "?"}  [${g.minX.toFixed(2)},${g.minY.toFixed(2)}]→[${g.maxX.toFixed(2)},${g.maxY.toFixed(2)}]`;
+  row.append(cb, dot, txt);
+  row.addEventListener("click", () => {
+    focusViewportToCellName(g.name);
+    setObjScopeTo(g.name);
+  });
+  rows.set(g.name, { checkbox: cb, el: row });
+  return row;
+}
+
+function renderPathTreeNode(node, container, depth) {
+  const subKeys = [...node.subs.keys()].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+  for (const key of subKeys) {
+    const ch = node.subs.get(key);
+    const folder = document.createElement("div");
+    folder.className = "celltree-folder";
+    folder.dataset.depth = String(depth);
+    const head = document.createElement("div");
+    head.className = "celltree-head expanded";
+    head.setAttribute("role", "button");
+    head.setAttribute("tabindex", "0");
+    head.setAttribute("aria-expanded", "true");
+    const twist = document.createElement("span");
+    twist.className = "twist";
+    twist.setAttribute("aria-hidden", "true");
+    twist.textContent = "▼";
+    const dn = document.createElement("span");
+    dn.className = "dirname";
+    dn.textContent = key;
+    const badge = document.createElement("span");
+    badge.className = "celltree-count";
+    const cnt = countCellsUnderPathNode(ch);
+    if (cnt > 0) badge.textContent = ` (${cnt})`;
+    head.append(twist, dn, badge);
+    const kids = document.createElement("div");
+    kids.className = "celltree-children";
+    const toggle = () => {
+      const exp = head.classList.toggle("expanded");
+      kids.style.display = exp ? "" : "none";
+      twist.textContent = exp ? "▼" : "▶";
+      head.setAttribute("aria-expanded", exp ? "true" : "false");
+    };
+    head.addEventListener("click", (e) => {
+      e.preventDefault();
+      toggle();
+    });
+    head.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        toggle();
+      }
+    });
+    renderPathTreeNode(ch, kids, depth + 1);
+    folder.append(head, kids);
+    container.appendChild(folder);
+  }
+  const leaves = [...node.leaves].sort((a, b) =>
+    a.g.name.localeCompare(b.g.name, undefined, { sensitivity: "base" })
+  );
+  for (const { g } of leaves) container.appendChild(makeCellListRow(g));
+}
+
+/** 그리드(`state.renderer.grid`) 기준으로 좌측 셀 목록 DOM을 다시 구성합니다. */
+function rebuildCellList() {
+  if (!listEl || !state.renderer?.grid) return;
+  rows.clear();
+  listEl.replaceChildren();
+  const root = pathTreeRoot();
+  for (const g of state.renderer.grid) addGridEntryToPathTree(root, g);
+  const frag = document.createDocumentFragment();
+  renderPathTreeNode(root, frag, 0);
   listEl.appendChild(frag);
+  for (const name of rows.keys()) syncRow(name);
+  applyCellListFilter();
+}
+
+function ensureCellRowAncestorsExpanded(rowEl) {
+  let el = rowEl.parentElement;
+  while (el && el !== listEl) {
+    if (el.classList.contains("celltree-children")) {
+      el.style.display = "";
+      const head = el.previousElementSibling;
+      if (head?.classList.contains("celltree-head")) {
+        head.classList.add("expanded");
+        head.setAttribute("aria-expanded", "true");
+        const twist = head.querySelector(".twist");
+        if (twist) twist.textContent = "▼";
+      }
+    }
+    el = el.parentElement;
+  }
+}
+
+function applyCellListFilter() {
+  const inp = document.getElementById("filter");
+  const q = (inp?.value || "").trim().toUpperCase();
+  const inView = new Set(state.renderer ? namesIntersectingViewport() : []);
+  for (const [name, r] of rows) {
+    const textOk = name.toUpperCase().includes(q);
+    const viewOk = inView.has(name);
+    r.el.style.display = textOk && viewOk ? "" : "none";
+  }
+  const folders = [...listEl.querySelectorAll(".celltree-folder")];
+  folders.sort((a, b) => (+b.dataset.depth || 0) - (+a.dataset.depth || 0));
+  for (const f of folders) {
+    const kids = f.querySelector(":scope > .celltree-children");
+    if (!kids) continue;
+    const rowHit = [...kids.querySelectorAll(".cellrow")].some((row) => row.style.display !== "none");
+    const subHit = [...kids.querySelectorAll(":scope > .celltree-folder")].some((sub) => sub.style.display !== "none");
+    f.style.display = rowHit || subHit ? "" : "none";
+  }
 }
 function syncRow(name) {
   const r = rows.get(name);
@@ -527,36 +514,52 @@ function syncCellListFocus(scrollList = true) {
   }
   if (scrollList) {
     const r = name ? rows.get(name) : null;
-    if (r?.el) r.el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    if (r?.el) {
+      ensureCellRowAncestorsExpanded(r.el);
+      r.el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
   }
 }
 function bandColor(name) {
-  const m = name.match(/^[A-Z]{2}(\d)/i);
+  const base = leafFileName(name);
+  const m = base.match(/^[A-Z]{2}(\d)/i);
   const b = m ? +m[1] : 0;
   return ({ 1: "#e74c3c", 2: "#e67e22", 3: "#f1c40f", 4: "#2ecc71", 5: "#3498db", 6: "#9b59b6" })[b] || "#888";
 }
 
 // filter box
-document.getElementById("filter").addEventListener("input", (e) => {
-  const q = e.target.value.trim().toUpperCase();
-  for (const [name, r] of rows) r.el.style.display = name.toUpperCase().includes(q) ? "" : "none";
-});
+document.getElementById("filter").addEventListener("input", () => applyCellListFilter());
 
 /** 모바일: 팬·줌이 멈춘 뒤 화면과 겹치는 셀만 로드. 뷰 밖 셀은 표시 끔(메모리는 유지). */
 let _mobileVpSyncTimer = null;
+/** 디바운스 타이머가 만료된 뒤 한 번 더 돌릴지(로딩 중 제스처가 있었을 때). */
+let _mobileVpSyncNeedsFlush = false;
+/** 동시에 여러 `loadMany`가 겹치지 않도록 직렬화. */
+let _mobileVpSyncFlushChain = Promise.resolve();
+
 function scheduleMobileViewportSync() {
   if (!isMobileLayout() || !state.renderer) return;
+  _mobileVpSyncNeedsFlush = true;
   clearTimeout(_mobileVpSyncTimer);
   _mobileVpSyncTimer = setTimeout(() => {
     _mobileVpSyncTimer = null;
+    _mobileVpSyncFlushChain = _mobileVpSyncFlushChain
+      .catch(() => {})
+      .then(() => flushMobileViewportSync());
+  }, 220);
+}
+
+async function flushMobileViewportSync() {
+  while (_mobileVpSyncNeedsFlush) {
+    _mobileVpSyncNeedsFlush = false;
     const keep = new Set(namesIntersectingViewport());
     for (const cell of state.renderer.cells.values()) {
       if (keep.has(cell.name)) continue;
       cell.visible = false;
       syncRow(cell.name);
     }
-    void loadMany([...keep], { mobileLabel: "화면 영역 ENC" });
-  }, 220);
+    await loadMany([...keep], { mobileLabel: "화면 영역 ENC" });
+  }
 }
 
 /** 셀 커버리지가 현재 캔버스 뷰포트와 겹치는 셀 이름 목록 */
@@ -932,6 +935,7 @@ async function openFiles(files) {
   }
   if (lastOkName) state.renderer.gridFocusName = lastOkName;
   draw();
+  rebuildCellList();
   syncCellListFocus();
 
   if (errors.length) {
@@ -1010,6 +1014,7 @@ window.addEventListener("mousemove", (e) => {
   lastX = e.clientX; lastY = e.clientY;
   // cheap: blit the snapshot shifted by the total drag, no feature drawing
   state.renderer.previewPan(e.clientX - startX, e.clientY - startY);
+  if (moved) applyCellListFilter();
 });
 canvas.addEventListener("wheel", (e) => {
   e.preventDefault();
@@ -1226,5 +1231,7 @@ window.s52app = { state, loadFromUrl, setCellVisible, draw };
 init().then(async () => {
   const cell = new URLSearchParams(location.search).get("cell");
   if (cell) await loadFromUrl(cell);
-  else await loadMany(namesIntersectingViewport(), { mobileLabel: "화면 영역 ENC" });
+  // 모바일: 초기 화면에서 겹치는 셀을 일괄 로드하면 셀이 많을 때 끝없이 받는 것처럼 보임.
+  // 팬·줌(또는 ?cell=)으로 움직일 때만 `scheduleMobileViewportSync` 경로에서 로드.
+  else if (!isMobileLayout()) await loadMany(namesIntersectingViewport(), { mobileLabel: "화면 영역 ENC" });
 });

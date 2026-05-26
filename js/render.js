@@ -296,6 +296,8 @@ class Renderer {
       if (!pg || pg.type === "Point") continue;
       for (const op of r.ops) {
         if (op.op !== "LS") continue;
+        // 격자 ON일 때만 포함되는 M_COVR/M_CSCL — DATCVR가 CHBLK 윤곽을 내어 UI 격자와 겹친 검정 테두리가 된다.
+        if (ENC_BOUNDARY_WITH_GRID.has(r.feat.acronym)) continue;
         const key = op.color + "|" + (op.width || 1) + "|" + (op.style || "");
         let grp = lineGroups.get(key);
         if (!grp) { grp = { op, rings: [] }; lineGroups.set(key, grp); }

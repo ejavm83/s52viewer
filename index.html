@@ -69,7 +69,20 @@
   #sidebar .btns { display: flex; gap: 4px; flex-wrap: wrap; }
   #sidebar button { flex: 1; font-size: 11px; padding: 4px 2px; background: #233140; color: #d4eaee; border: 1px solid #2a3742; cursor: pointer; }
   #sidebar button:hover { background: #2e4255; }
-  #celllist { flex: 1; overflow-y: auto; font-family: Consolas, monospace; font-size: 12px; }
+  #celllist { flex: 1; overflow-y: auto; font-family: Consolas, monospace; font-size: 12px; line-height: 1.35; }
+  .celltree-folder { margin: 0; }
+  .celltree-head {
+    display: flex; align-items: center; gap: 4px; padding: 3px 6px 3px 2px;
+    cursor: pointer; user-select: none; color: #9fb4bb; font-size: 12px; border-radius: 3px;
+  }
+  .celltree-head:hover { background: #1c2733; color: #d4eaee; }
+  .celltree-head .twist { flex: 0 0 14px; width: 14px; text-align: center; font-size: 10px; color: #6d8f9a; }
+  .celltree-head .dirname { font-weight: 600; color: #b8ccd4; }
+  .celltree-head .celltree-count { font-size: 11px; color: #6f8088; margin-left: 2px; }
+  .celltree-children {
+    padding-left: 8px; margin-left: 7px;
+    border-left: 1px solid #2a3742;
+  }
   .cellrow { display: flex; align-items: center; gap: 6px; padding: 2px 8px; cursor: pointer; white-space: nowrap; }
   .cellrow:hover { background: #1c2733; }
   .cellrow.on { background: #1f3247; }
@@ -99,7 +112,7 @@
   #stage { flex: 1; position: relative; background: #73b6ef; overflow: hidden; }
   #chart { position: absolute; inset: 0; cursor: grab; }
   #chart:active { cursor: grabbing; }
-  /* 축척·미니맵 오버레이 */
+  /* 축척 오버레이 */
   #scale-bar {
     position: absolute; left: 10px; bottom: 10px; z-index: 6; pointer-events: none;
     font-size: 11px; font-weight: 600; color: #1a2530;
@@ -112,13 +125,6 @@
     box-shadow: 0 1px 2px rgba(0,0,0,.12);
   }
   #scale-bar .label { display: block; margin-bottom: 1px; white-space: nowrap; }
-  #minimap-wrap {
-    position: absolute; right: 10px; bottom: 10px; z-index: 6;
-    width: 168px; height: 132px; border-radius: 4px; overflow: hidden;
-    border: 1px solid rgba(26,37,48,.55); box-shadow: 0 2px 10px rgba(0,0,0,.25);
-    background: rgba(230,242,252,.92); cursor: crosshair;
-  }
-  #minimap { display: block; width: 100%; height: 100%; vertical-align: top; }
   #status-bar {
     display: flex; align-items: center; gap: 14px; flex-shrink: 0;
     padding: 5px 12px; background: #11181f; color: #9fb4bb; font-size: 12px;
@@ -133,9 +139,20 @@
   }
   a.doc-page:hover { text-decoration: underline; }
   #toolbar a.doc-page { font-size: 13px; margin-left: 2px; }
-  #status-bar .doc-page-mobile { display: none; }
+  #status-bar .doc-page-mobile,
+  #status-bar .mobile-app-title { display: none; }
   @media (max-width: 768px) {
     #status-bar .doc-page-mobile { display: inline; }
+    #status-bar .mobile-app-title {
+      display: block;
+      font-size: 13px;
+      font-weight: 600;
+      margin: 0;
+      padding: 0;
+      color: #d4eaee;
+      flex-shrink: 0;
+      line-height: 1.2;
+    }
   }
   #app-credit {
     flex-shrink: 0; font-size: 11px; color: #7a939c; white-space: nowrap;
@@ -150,7 +167,16 @@
     #status-bar {
       position: fixed; left: 0; right: 0; bottom: 0; z-index: 15;
       justify-content: center;
+      flex-wrap: wrap;
+      row-gap: 4px;
+      column-gap: 10px;
       padding: 5px 10px max(6px, env(safe-area-inset-bottom));
+    }
+    #status-bar #app-credit {
+      white-space: normal;
+      text-align: center;
+      max-width: 100%;
+      line-height: 1.35;
     }
     #status { display: none; }
     #chart {
@@ -159,13 +185,8 @@
     }
     #scale-bar {
       left: 8px;
-      bottom: max(50px, calc(env(safe-area-inset-bottom) + 40px));
+      bottom: max(44px, calc(env(safe-area-inset-bottom) + 32px));
       font-size: 10px;
-    }
-    #minimap-wrap {
-      right: 8px;
-      bottom: max(50px, calc(env(safe-area-inset-bottom) + 40px));
-      width: 120px; height: 94px;
     }
     #map-loading:not([hidden]) {
       display: block;
@@ -235,7 +256,7 @@
       </div>
       <div id="panelCells" class="panel">
         <div class="pad">
-          <input type="text" id="filter" placeholder="셀 이름 검색…" />
+          <input type="text" id="filter" placeholder="셀 검색(지도에 보이는 영역만 목록에 표시)…" />
           <div class="btns">
             <button id="showVisible">보이는영역 표시</button>
             <button id="hideAll">모두 숨김</button>
@@ -265,17 +286,15 @@
         <span class="label" id="scale-bar-label"></span>
         <div class="track" id="scale-bar-track"></div>
       </div>
-      <div id="minimap-wrap" title="클릭하면 해당 위치로 이동합니다">
-        <canvas id="minimap" width="168" height="132"></canvas>
-      </div>
     </div>
   </div>
   <div id="status-bar">
     <div id="status">초기화 중…</div>
+    <h1 class="mobile-app-title">S-52 ENC Viewer</h1>
     <a href="about.html" class="doc-page doc-page-mobile">프로그램 설명</a>
-    <div id="app-credit">제작: 지엠티 김길용 수석 · v0.0.5 (2026.05.26)</div>
+    <div id="app-credit">제작: 지엠티 김길용 수석 · v0.0.6 (2026.05.27)</div>
   </div>
   <div id="map-loading" hidden>로딩 중…</div>
-  <script type="module" src="js/main.js?v=18"></script>
+  <script type="module" src="js/main.js?v=21"></script>
 </body>
 </html>

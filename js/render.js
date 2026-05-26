@@ -21,6 +21,20 @@ const DASH = [6, 4], DOTT = [1, 3], EMPTY_DASH = [];
 /** Min squared screen-space edge length (px²) for path decimation; see _path(). */
 const MIN_SEG2 = 1;
 
+/**
+ * S-52 아틀라스 심볼 접두: TSS·항로·추천항적·심수로·조류/만조 등 **방향 화살표**류.
+ * 겹침제거(declutter) 시 픽셀 거리 < FLOW_ARROW_MIN_DIST_PX 이내의 화살표는 하나만 남긴다.
+ *
+ * - 동일 앵커에 CS 규칙이 두 번 SY를 내는 경우(TSSLPT+DWRTPT)와 인접 ENC 셀이 같은 항로를 양쪽
+ *   에서 가져오는 경우는 거리 0~5 px이라 어떤 임계값으로도 제거된다.
+ * - 같은 항로의 연속 위치 마커들(여수해만 DW 1호/3호/6호처럼 ~50~80 px 간격으로 줄지어 박힌
+ *   화살표)은 OpenCPN 표기와 맞추기 위해 묶어 표현. 64 px 임계값이면 항로당 6~8개 정도로
+ *   띄엄띄엄 남는다.
+ * - TSS 평행 차선은 보통 80~150 px 이상 떨어져 있으므로 양방향이 모두 표시된다.
+ */
+const FLOW_ARROW_SYMBOL_RE = /^(TSSLPT|TWRTPT|RECTRC|DWRTPT|RCTLPT|TSSRON|DWRUTE|CURENT|FLDSTR|EBBSTR|TIDSTR|CURDEF)/i;
+const FLOW_ARROW_MIN_DIST_PX = 64;
+
 /** S-57 메타 경계(M_COVR·M_CSCL) — UI 격자와 함께 켜고 끔. 표시범주 Other라 Standard에서도 격자 ON이면 허용 */
 const ENC_BOUNDARY_WITH_GRID = new Set(["M_COVR", "M_CSCL"]);
 
@@ -145,25 +159,40 @@ class Renderer {
     projectFeature(feat); // fallback path (main-thread parse); workers pre-project
   }
 
-  // The loaded cell whose compilation scale (CSCL) is nearest the current view
-  // denominator, among cells overlapping the visible window. Used to draw only
-  // the best-matching scale band instead of stacking every overlapping chart.
-  _refScale(denom, winMinX, winMaxX, winMinY, winMaxY) {
+  /** Mercator 뷰 창 → 도 단위 lon/lat 박스 (경계 포함). */
+  _mercWinToLonLat(winMinX, winMaxX, winMinY, winMaxY) {
     const RAD = 180 / Math.PI;
     const lonMin = winMinX * RAD, lonMax = winMaxX * RAD;
     const latMin = (2 * Math.atan(Math.exp(winMinY)) - Math.PI / 2) * RAD;
     const latMax = (2 * Math.atan(Math.exp(winMaxY)) - Math.PI / 2) * RAD;
+    return { lonMin, lonMax, latMin, latMax };
+  }
+
+  // Among loaded+visible cells overlapping the given lon/lat rectangle, the CSCL
+  // whose log is nearest log(view denom). Used for scale-band filtering.
+  // Must use the same "too detailed" rule as the render loop: a cell excluded by
+  // scaleOutFactor must not set refCscl, or coarser cells lose the band and nothing draws.
+  _refScaleInLonLatBox(denom, lonMin, lonMax, latMin, latMax) {
     const lnD = Math.log(denom);
+    const outLim = this.scaleOutFactor;
     let best = null, bestDiff = Infinity;
     for (const cell of this.cells.values()) {
       if (!cell.visible || !cell.loaded) continue;
       const b = cell.bounds, cscl = b && b.cscl;
       if (!cscl) continue;
+      if (denom > cscl * outLim) continue;
       if (b.maxX < lonMin || b.minX > lonMax || b.maxY < latMin || b.minY > latMax) continue;
       const diff = Math.abs(Math.log(cscl) - lnD);
       if (diff < bestDiff) { bestDiff = diff; best = cscl; }
     }
     return best;
+  }
+
+  // Whole-viewport ref scale (e.g. diagnostics). Prefer per-cell intersection
+  // in render() so mixed-scale views do not leave rectangular holes.
+  _refScale(denom, winMinX, winMaxX, winMinY, winMaxY) {
+    const { lonMin, lonMax, latMin, latMax } = this._mercWinToLonLat(winMinX, winMaxX, winMinY, winMaxY);
+    return this._refScaleInLonLatBox(denom, lonMin, lonMax, latMin, latMax);
   }
 
   // Tally object classes -> feature count. With no argument: all loaded+visible
@@ -191,6 +220,8 @@ class Renderer {
     ctx.fillRect(0, 0, w, h);
 
     this._labelBoxes = [];
+    /** 통항·조류 방향 화살표 디클러터: 버킷(28 px 격자) → 해당 버킷에 배치된 점들의 [x,y,...] */
+    this._flowArrowGrid = new Map();
     const denom = vp.scaleDenominator();
     const table = this.s52.currentTable;
     // visible Mercator window for culling (small margin)
@@ -198,21 +229,17 @@ class Renderer {
     const winMinX = vp.cx - halfW, winMaxX = vp.cx + halfW;
     const winMinY = vp.cy - halfH, winMaxY = vp.cy + halfH;
 
-    // OpenCPN-style chart selection: when cells of several scales overlap, pick
-    // the band whose compilation scale best matches the view, and draw only it
-    // (others would just stack and muddy the picture). refCscl = the loaded
-    // cell scale nearest the view denominator over the visible window.
-    const refCscl = this.scaleDisplay ? this._refScale(denom, winMinX, winMaxX, winMinY, winMaxY) : null;
-
     let drawn = 0, culled = 0;
     const resolved = [];
     for (const cell of this.cells.values()) {
       if (!cell.visible || !cell.loaded || !cell.features) continue;
       const cscl = cell.bounds && cell.bounds.cscl;
-      if (this.scaleDisplay && cscl) {
-        if (denom > cscl * this.scaleOutFactor) continue;        // far too detailed
-        if (refCscl && (cscl < refCscl / 2.5 || cscl > refCscl * 2.5)) continue; // not the chosen band
-      }
+      // Drop only charts far too detailed for the view. We do NOT restrict to a
+      // single scale band: that blanks regions whose only coverage is a cell of
+      // a different scale. Instead cells draw coarse->fine (insertion order), so
+      // finer charts paint over coarser ones where they exist and coarser charts
+      // back-fill everywhere else — full coverage, no holes.
+      if (this.scaleDisplay && cscl && denom > cscl * this.scaleOutFactor) continue;
       for (const feat of cell.features) {
         if (!feat.geom && !feat.soundings) continue;
         if (this.hiddenClasses.has(feat.acronym)) continue; // per-object-class toggle
@@ -258,6 +285,7 @@ class Renderer {
       for (const op of r.ops) {
         if (op.op === "AC") this._fillArea(pg.rings, op.color, 1);
         else if (op.op === "AP") this._fillArea(pg.rings, op.color, 0.12);
+        else if (op.op === "AP_ACHARE") this._fillAchareHatch(pg.rings);
       }
     }
     // pass 2: lines — batched by style so thousands of features stroke in a
@@ -520,6 +548,57 @@ class Renderer {
     if (alpha !== 1) ctx.globalAlpha = 1;
   }
 
+  /** ACHARE 면 내부: S-52 PL의 × 패턴을 화면 픽셀 격자로 근사(클립 후 선분만). */
+  _fillAchareHatch(rings) {
+    if (!rings || !rings.length) return;
+    const ctx = this.ctx;
+    const vp = this.vp;
+    let sx0 = Infinity;
+    let sy0 = Infinity;
+    let sx1 = -Infinity;
+    let sy1 = -Infinity;
+    for (const ring of rings) {
+      for (let i = 0; i < ring.length; i += 2) {
+        const px = vp.sx(ring[i]);
+        const py = vp.sy(ring[i + 1]);
+        if (px < sx0) sx0 = px;
+        if (py < sy0) sy0 = py;
+        if (px > sx1) sx1 = px;
+        if (py > sy1) sy1 = py;
+      }
+    }
+    if (!(sx1 > sx0) || !(sy1 > sy0)) return;
+
+    ctx.save();
+    ctx.beginPath();
+    for (const ring of rings) {
+      if (ring.length >= 6) this._path(ring);
+    }
+    ctx.clip("evenodd");
+
+    const step = 10;
+    const arm = 4;
+    const col = this.s52.color("CHBLK");
+    ctx.strokeStyle = col;
+    ctx.globalAlpha = 0.42;
+    ctx.lineWidth = 0.9;
+    ctx.lineCap = "butt";
+    ctx.beginPath();
+    const pad = step * 2;
+    const gx0 = Math.floor((sx0 - pad) / step) * step;
+    const gy0 = Math.floor((sy0 - pad) / step) * step;
+    for (let gx = gx0; gx <= sx1 + pad; gx += step) {
+      for (let gy = gy0; gy <= sy1 + pad; gy += step) {
+        ctx.moveTo(gx - arm, gy - arm);
+        ctx.lineTo(gx + arm, gy + arm);
+        ctx.moveTo(gx - arm, gy + arm);
+        ctx.lineTo(gx + arm, gy - arm);
+      }
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+
   _strokePolys(rings, op) {
     const ctx = this.ctx;
     this._applyStroke(op);
@@ -561,7 +640,29 @@ class Renderer {
 
   _symbolFeature(feat, symName, rot) {
     const a = feat._pg && feat._pg.anchor;
-    if (a) this._blit(symName, a[0], a[1], rot);
+    if (!a) return;
+    if (this.declutter && FLOW_ARROW_SYMBOL_RE.test(symName || "")) {
+      const x = this.vp.sx(a[0]), y = this.vp.sy(a[1]);
+      const g = FLOW_ARROW_MIN_DIST_PX;
+      const min2 = g * g;
+      const bx = Math.floor(x / g), by = Math.floor(y / g);
+      // 3×3 이웃 버킷까지 검사해 격자 경계에서 흔들리는 (∼1 px) 중복도 묶는다.
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const arr = this._flowArrowGrid.get(`${bx + dx},${by + dy}`);
+          if (!arr) continue;
+          for (let i = 0; i < arr.length; i += 2) {
+            const ddx = x - arr[i], ddy = y - arr[i + 1];
+            if (ddx * ddx + ddy * ddy < min2) return;
+          }
+        }
+      }
+      const key = `${bx},${by}`;
+      let arr = this._flowArrowGrid.get(key);
+      if (!arr) { arr = []; this._flowArrowGrid.set(key, arr); }
+      arr.push(x, y);
+    }
+    this._blit(symName, a[0], a[1], rot);
   }
 
   // rot: degrees clockwise from north (S-57 ORIENT). Screen is north-up so the

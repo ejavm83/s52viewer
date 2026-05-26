@@ -21,12 +21,49 @@
     max-width: min(42vw, 320px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   #focused-cell:empty { display: none; }
+  /* ENC 열기 — 파일/폴더 단일 드롭다운 */
+  #open-enc { position: relative; display: inline-flex; align-items: center; }
+  #open-enc > .hidden-file { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+  #openEncBtn {
+    display: inline-flex; align-items: center; gap: 6px;
+    font: 600 13px "Segoe UI", sans-serif; color: #d4eaee; cursor: pointer;
+    background: #233140; border: 1px solid #2a3742; border-radius: 4px;
+    padding: 4px 10px;
+  }
+  #openEncBtn:hover, #openEncBtn[aria-expanded="true"] { background: #2e4255; }
+  #openEncBtn .caret { font-size: 9px; opacity: .8; }
+  #openEncMenu {
+    position: absolute; top: calc(100% + 4px); left: 0; z-index: 30;
+    min-width: 180px; padding: 4px; margin: 0;
+    background: #1c2733; color: #d4eaee; border: 1px solid #2a3742; border-radius: 4px;
+    box-shadow: 0 4px 14px rgba(0,0,0,.35);
+    list-style: none; display: none;
+  }
+  #openEncMenu[data-open] { display: block; }
+  #openEncMenu button {
+    width: 100%; text-align: left; padding: 6px 10px; font: 13px "Segoe UI", sans-serif;
+    background: transparent; color: inherit; border: 0; cursor: pointer; border-radius: 3px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  #openEncMenu button:hover:not(:disabled) { background: #2e4255; }
+  #openEncMenu button:disabled { opacity: .45; cursor: not-allowed; }
+  #openEncMenu button .hint { margin-left: auto; font-size: 11px; color: #7a939c; }
   #main { flex: 1; display: flex; min-height: 0; }
-  body.sidebar-collapsed #sidebar { display: none; }
+  body.sidebar-collapsed #sidebar,
+  body.sidebar-collapsed #sidebar-resizer { display: none; }
   #sidebar {
-    width: 345px; background: #11181f; color: #cfe0e5; display: flex; flex-direction: column;
+    width: var(--sidebar-width, 345px); min-width: 200px; max-width: min(85vw, 900px);
+    flex-shrink: 0;
+    background: #11181f; color: #cfe0e5; display: flex; flex-direction: column;
     border-right: 1px solid #2a3742;
   }
+  #sidebar-resizer {
+    flex: 0 0 5px; width: 5px; min-width: 5px; cursor: col-resize; align-self: stretch;
+    background: #1a232d; border-right: 1px solid #2a3742;
+    touch-action: none;
+  }
+  #sidebar-resizer:hover { background: #243240; }
+  #sidebar-resizer.resizing { background: #2980b9; }
   #sidebar .pad { padding: 8px; display: flex; flex-direction: column; gap: 6px; }
   #sidebar input[type=text], #sidebar select { width: 100%; padding: 4px 6px; background: #1c2733; color: #d4eaee; border: 1px solid #2a3742; }
   #sidebar .btns { display: flex; gap: 4px; flex-wrap: wrap; }
@@ -107,7 +144,7 @@
   /* 모바일: 지도만 전체 화면 */
   @media (max-width: 768px) {
     html, body { height: 100%; height: 100dvh; }
-    #toolbar, #sidebar { display: none !important; }
+    #toolbar, #sidebar, #sidebar-resizer { display: none !important; }
     #main { flex: 1; min-height: 0; min-height: 100dvh; }
     #stage { flex: 1; min-height: 0; }
     #status-bar {
@@ -147,7 +184,17 @@
     <h1>S-52 ENC Viewer</h1>
     <a href="about.html" class="doc-page">프로그램 설명</a>
     <span id="focused-cell" title="지도에서 마지막으로 포커스한 ENC 셀(.000)"></span>
-    <label>파일 열기: <input type="file" id="file" accept=".000,.001,.002,*" /></label>
+    <span id="open-enc">
+      <button type="button" id="openEncBtn" aria-haspopup="menu" aria-expanded="false" title="ENC 셀(.000)을 파일 또는 폴더 단위로 엽니다">
+        ENC 열기 <span class="caret" aria-hidden="true">▾</span>
+      </button>
+      <ul id="openEncMenu" role="menu" aria-labelledby="openEncBtn">
+        <li role="none"><button type="button" role="menuitem" data-action="files">파일 선택… <span class="hint">.000 다중</span></button></li>
+        <li role="none"><button type="button" role="menuitem" data-action="folder">폴더 선택… <span class="hint">.000 일괄</span></button></li>
+      </ul>
+      <input type="file" id="file" class="hidden-file" multiple accept=".000,.001,.002,*" />
+      <input type="file" id="folder" class="hidden-file" webkitdirectory directory multiple />
+    </span>
     <label>색상표:
       <select id="palette">
         <option value="DAY_BRIGHT">DAY_BRIGHT</option>
@@ -177,7 +224,7 @@
     <label><input type="checkbox" id="text" checked /> 라벨</label>
     <label><input type="checkbox" id="sound" checked /> 수심</label>
     <label><input type="checkbox" id="scamin" checked /> 축척억제</label>
-    <label><input type="checkbox" id="declutter" checked /> 겹침제거</label>
+    <label title="수심·텍스트 겹침 완화 및 교통·조류 방향 화살표 중복 제거(같은 화면 격자당 1개)"><input type="checkbox" id="declutter" checked /> 겹침제거</label>
     <label><input type="checkbox" id="sidebarVisible" checked /> 셀 목록(좌측)</label>
   </div>
   <div id="main">
@@ -211,6 +258,7 @@
         <div id="objlist"></div>
       </div>
     </div>
+    <div id="sidebar-resizer" role="separator" aria-orientation="vertical" aria-label="셀 목록 패널 너비 조절" title="드래그하여 너비 조절"></div>
     <div id="stage">
       <canvas id="chart"></canvas>
       <div id="scale-bar" aria-hidden="true">
@@ -225,9 +273,9 @@
   <div id="status-bar">
     <div id="status">초기화 중…</div>
     <a href="about.html" class="doc-page doc-page-mobile">프로그램 설명</a>
-    <div id="app-credit">제작: 지엠티 김길용 수석 · v0.0.4 (2026.05.26)</div>
+    <div id="app-credit">제작: 지엠티 김길용 수석 · v0.0.5 (2026.05.26)</div>
   </div>
   <div id="map-loading" hidden>로딩 중…</div>
-  <script type="module" src="js/main.js?v=13"></script>
+  <script type="module" src="js/main.js?v=18"></script>
 </body>
 </html>

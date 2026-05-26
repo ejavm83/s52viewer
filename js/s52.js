@@ -245,6 +245,15 @@ class S52 {
       ops.push({ op: "LS", style: "DASH", width: 2, color: this.color("CHMGD") });
       return;
     }
+    // 정박 구역(ACHARE) 면: PL의 CS(RESTRN01)가 내부 × 패턴을 담당 — CARIS 등과 유사하게 근사
+    if (
+      proc.startsWith("RESTRN01") &&
+      String(feat.acronym || "").toUpperCase() === "ACHARE" &&
+      feat.prim === 3
+    ) {
+      ops.push({ op: "AP_ACHARE" });
+      return;
+    }
     if (proc.startsWith("QUAPOS") || proc.startsWith("SLCONS")) {
       ops.push({ op: "LS", style: "SOLD", width: 1.5, color: this.color("CSTLN") });
       return;

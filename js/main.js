@@ -2,7 +2,7 @@ import { DDF } from "./iso8211.js";
 import { S57 } from "./s57.js";
 import { S52 } from "./s52.js";
 import { loadCatalog } from "./catalog.js";
-import { Renderer } from "./render.js?v=11";
+import { Renderer } from "./render.js?v=14";
 
 const ATLAS_BY_TABLE = {
   DAY_BRIGHT: "assets/rastersymbols-day.png",
@@ -37,6 +37,72 @@ const minimapCanvas = document.getElementById("minimap");
 const minimapWrap = document.getElementById("minimap-wrap");
 const scaleBarLabel = document.getElementById("scale-bar-label");
 const scaleBarTrack = document.getElementById("scale-bar-track");
+const sidebarEl = document.getElementById("sidebar");
+const sidebarResizerEl = document.getElementById("sidebar-resizer");
+
+const SIDEBAR_WIDTH_STORAGE = "encViewerSidebarWidth";
+const SIDEBAR_MIN_PX = 200;
+const SIDEBAR_MAX_CAP_PX = 900;
+
+function clampSidebarWidthPx(px) {
+  const max = Math.min(window.innerWidth * 0.85, SIDEBAR_MAX_CAP_PX);
+  return Math.round(Math.min(max, Math.max(SIDEBAR_MIN_PX, px)));
+}
+
+function applySidebarWidthPx(px) {
+  const w = clampSidebarWidthPx(px);
+  document.documentElement.style.setProperty("--sidebar-width", `${w}px`);
+  return w;
+}
+
+function readStoredSidebarWidthPx() {
+  try {
+    const raw = localStorage.getItem(SIDEBAR_WIDTH_STORAGE);
+    if (raw == null) return null;
+    const n = Number.parseInt(raw, 10);
+    return Number.isFinite(n) ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+function persistSidebarWidthPx(w) {
+  try {
+    localStorage.setItem(SIDEBAR_WIDTH_STORAGE, String(w));
+  } catch {
+    /* private mode 등 */
+  }
+}
+
+const _storedSidebarW = readStoredSidebarWidthPx();
+if (_storedSidebarW != null) applySidebarWidthPx(_storedSidebarW);
+
+if (sidebarResizerEl && sidebarEl) {
+  sidebarResizerEl.addEventListener("mousedown", (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = sidebarEl.getBoundingClientRect().width;
+    sidebarResizerEl.classList.add("resizing");
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
+    const onMove = (ev) => {
+      applySidebarWidthPx(startW + ev.clientX - startX);
+      resize();
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      sidebarResizerEl.classList.remove("resizing");
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      persistSidebarWidthPx(sidebarEl.getBoundingClientRect().width);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  });
+}
 
 const R_EARTH = 6378137;
 const NM = 1852;
@@ -300,7 +366,7 @@ function resize() {
   canvas.width = wrap.clientWidth;
   canvas.height = wrap.clientHeight;
   syncMinimapSize();
-  // 첫 뷰 맞춤은 init() / openFile()에서만 수행 (모바일 전역 fit 덮어쓰기 방지)
+  // 첫 뷰 맞춤은 init() / openFiles()에서만 수행 (모바일 전역 fit 덮어쓰기 방지)
   draw();
 }
 window.addEventListener("resize", resize);
@@ -712,32 +778,174 @@ async function loadMany(names, opts = {}) {
   refreshObjects();
 }
 
-// ---- file open / drag&drop (adds a cell) ----
+// ---- file open / drag&drop (adds a cell; 다중 선택·드롭 지원) ----
+function unionBounds(boundsList) {
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const b of boundsList) {
+    if (!b) continue;
+    minX = Math.min(minX, b.minX);
+    maxX = Math.max(maxX, b.maxX);
+    minY = Math.min(minY, b.minY);
+    maxY = Math.max(maxY, b.maxY);
+  }
+  if (minX === Infinity) return null;
+  return { minX, maxX, minY, maxY };
+}
+
+/** 폴더 선택 시 하위 경로로 셀 키를 구분(동일 파일명 충돌 방지). 일반 파일 선택은 leaf 이름만 사용. */
+function localEncFileKey(file) {
+  const rel = file.webkitRelativePath;
+  if (rel && rel.length > 0) return rel.replace(/\\/g, "/");
+  return file.name;
+}
+
+function collectDot000Files(fileList) {
+  const list = [...fileList].filter((f) => f.name.toLowerCase().endsWith(".000"));
+  list.sort((a, b) => localEncFileKey(a).localeCompare(localEncFileKey(b), undefined, { sensitivity: "base" }));
+  return list;
+}
+
+async function ingestLocalEncFromFile(file) {
+  const cellKey = localEncFileKey(file);
+  const buf = await file.arrayBuffer();
+  const chart = await loader.parse(buf); // parsed in a worker
+  let cell = state.renderer.cells.get(cellKey);
+  if (!cell) {
+    cell = { name: cellKey, bounds: chart.bounds, visible: true, loaded: true, features: chart.features, chartBounds: chart.bounds };
+    state.renderer.cells.set(cellKey, cell);
+    state.renderer.grid.push({ name: cellKey, ...chart.bounds, cscl: chart.comf ? null : null });
+  } else {
+    cell.features = chart.features; cell.loaded = true; cell.visible = true; cell.chartBounds = chart.bounds;
+  }
+  return { bounds: chart.bounds, featuresLen: chart.features.length };
+}
+
+// ENC 열기: 파일·폴더 단일 드롭다운 버튼. 실제 input[type=file]은 시각적으로 숨기고
+// 메뉴 항목 클릭 시 해당 입력의 click()을 위임 호출한다.
+(function wireOpenEncMenu() {
+  const btn = document.getElementById("openEncBtn");
+  const menu = document.getElementById("openEncMenu");
+  const fileInput = document.getElementById("file");
+  const folderInput = document.getElementById("folder");
+  if (!btn || !menu || !fileInput || !folderInput) return;
+
+  // 폴더 픽커 미지원 환경(iOS Safari 등): 해당 메뉴 항목 비활성화
+  const folderSupported = "webkitdirectory" in document.createElement("input");
+  const folderItem = menu.querySelector('button[data-action="folder"]');
+  if (folderItem && !folderSupported) {
+    folderItem.disabled = true;
+    folderItem.title = "이 브라우저는 폴더 선택을 지원하지 않습니다.";
+  }
+
+  function openMenu() {
+    menu.dataset.open = "1";
+    btn.setAttribute("aria-expanded", "true");
+    setTimeout(() => {
+      window.addEventListener("mousedown", onOutside, { capture: true });
+      window.addEventListener("keydown", onEsc, true);
+    }, 0);
+  }
+  function closeMenu() {
+    delete menu.dataset.open;
+    btn.setAttribute("aria-expanded", "false");
+    window.removeEventListener("mousedown", onOutside, { capture: true });
+    window.removeEventListener("keydown", onEsc, true);
+  }
+  function onOutside(e) {
+    if (menu.contains(e.target) || btn.contains(e.target)) return;
+    closeMenu();
+  }
+  function onEsc(e) {
+    if (e.key === "Escape") { e.preventDefault(); closeMenu(); btn.focus(); }
+  }
+  btn.addEventListener("click", () => {
+    if (menu.dataset.open) closeMenu(); else openMenu();
+  });
+  menu.addEventListener("click", (e) => {
+    const item = e.target.closest("button[data-action]");
+    if (!item || item.disabled) return;
+    closeMenu();
+    if (item.dataset.action === "files") fileInput.click();
+    else if (item.dataset.action === "folder") folderInput.click();
+  });
+})();
+
 document.getElementById("file").addEventListener("change", (e) => {
-  if (e.target.files[0]) openFile(e.target.files[0]);
+  const el = e.target;
+  const files = el.files;
+  if (!files?.length) return;
+  void openFiles(files).finally(() => { el.value = ""; });
+});
+document.getElementById("folder").addEventListener("change", (e) => {
+  const el = e.target;
+  const files = el.files;
+  if (!files?.length) return;
+  const enc = collectDot000Files(files);
+  if (!enc.length) {
+    setStatus("선택한 폴더에 .000 파일이 없습니다.");
+    el.value = "";
+    return;
+  }
+  void openFiles(enc).finally(() => { el.value = ""; });
 });
 window.addEventListener("dragover", (e) => e.preventDefault());
 window.addEventListener("drop", (e) => {
   e.preventDefault();
-  if (e.dataTransfer.files[0]) openFile(e.dataTransfer.files[0]);
+  if (e.dataTransfer.files?.length) void openFiles(e.dataTransfer.files);
 });
-async function openFile(file) {
-  setStatus(`${file.name} 파싱 중…`);
-  const buf = await file.arrayBuffer();
-  const chart = await loader.parse(buf); // parsed in a worker
-  let cell = state.renderer.cells.get(file.name);
-  if (!cell) {
-    cell = { name: file.name, bounds: chart.bounds, visible: true, loaded: true, features: chart.features, chartBounds: chart.bounds };
-    state.renderer.cells.set(file.name, cell);
-    state.renderer.grid.push({ name: file.name, ...chart.bounds, cscl: chart.comf ? null : null });
-  } else {
-    cell.features = chart.features; cell.loaded = true; cell.visible = true; cell.chartBounds = chart.bounds;
+
+async function openFiles(files) {
+  const list = [...files];
+  if (!list.length) return;
+  const CONC = Math.min(4, navigator.hardwareConcurrency || 4);
+  const allBounds = [];
+  let lastOkName = "";
+  let featureSum = 0;
+  const errors = [];
+
+  for (let i = 0; i < list.length; i += CONC) {
+    const chunk = list.slice(i, i + CONC);
+    const from = i + 1;
+    const to = Math.min(i + chunk.length, list.length);
+    setStatus(`${from}–${to}/${list.length} 파일 파싱 중…`);
+    const settled = await Promise.allSettled(chunk.map((file) => ingestLocalEncFromFile(file)));
+    for (let j = 0; j < settled.length; j++) {
+      const s = settled[j];
+      const file = chunk[j];
+      const id = localEncFileKey(file);
+      if (s.status === "fulfilled") {
+        allBounds.push(s.value.bounds);
+        lastOkName = id;
+        featureSum += s.value.featuresLen;
+      } else {
+        errors.push({ name: id, err: s.reason });
+        console.error(id, s.reason);
+      }
+    }
+    draw();
   }
-  state.renderer.vp.fit(chart.bounds); state.fitted = true;
-  state.renderer.gridFocusName = file.name;
+
+  const u = unionBounds(allBounds);
+  if (u) {
+    state.renderer.vp.fit(u);
+    state.fitted = true;
+  }
+  if (lastOkName) state.renderer.gridFocusName = lastOkName;
   draw();
   syncCellListFocus();
-  setStatus(`${file.name}: 피처 ${chart.features.length}개`);
+
+  if (errors.length) {
+    const msg0 = errors[0].err && errors[0].err.message ? errors[0].err.message : String(errors[0].err);
+    if (errors.length === list.length) {
+      setStatus(`열기 실패 (${list.length}개): ${errors[0].name} — ${msg0}`);
+    } else {
+      setStatus(`${allBounds.length}개 성공, ${errors.length}개 실패 (예: ${errors[0].name} — ${msg0})`);
+    }
+  } else if (list.length === 1) {
+    setStatus(`${lastOkName}: 피처 ${featureSum}개`);
+  } else {
+    setStatus(`${list.length}개 파일 — 총 피처 ${featureSum}개`);
+  }
 }
 
 async function loadFromUrl(url) {
@@ -836,10 +1044,50 @@ function isZoomOutKey(e) {
   return c === "Minus" || c === "NumpadSubtract" || e.key === "-" || e.key === "_";
 }
 
+// ---- 뷰포트 즐겨찾기 (1~9) ----
+// Ctrl+숫자로 현재 위치·축척 저장, 숫자만 눌러 복원. localStorage에 영구 보관.
+const BOOKMARK_STORAGE = "encViewerBookmarks";
+function loadBookmarks() {
+  try { return JSON.parse(localStorage.getItem(BOOKMARK_STORAGE)) || {}; } catch { return {}; }
+}
+function saveBookmarks(bm) {
+  try { localStorage.setItem(BOOKMARK_STORAGE, JSON.stringify(bm)); } catch { /* private mode */ }
+}
+
 window.addEventListener("keydown", (e) => {
   if (!state.renderer || keyboardTargetIgnoresMapKeys(e.target)) return;
-  if (e.ctrlKey || e.metaKey || e.altKey) return;
   const vp = state.renderer.vp;
+
+  // 즐겨찾기: Ctrl+1~9 저장 / 1~9 복원
+  const digit = e.code.match(/^(?:Digit|Numpad)(\d)$/)?.[1];
+  if (digit && digit >= "1" && digit <= "9" && !e.altKey) {
+    if (e.ctrlKey || e.metaKey) {
+      // 저장
+      const bm = loadBookmarks();
+      bm[digit] = { cx: vp.cx, cy: vp.cy, scale: vp.scale };
+      saveBookmarks(bm);
+      setStatus(`즐겨찾기 ${digit}번에 현재 뷰 저장`);
+      e.preventDefault();
+      return;
+    }
+    if (!e.shiftKey) {
+      // 복원
+      const bm = loadBookmarks();
+      const slot = bm[digit];
+      if (slot) {
+        vp.cx = slot.cx; vp.cy = slot.cy; vp.scale = slot.scale;
+        setStatus(`즐겨찾기 ${digit}번 복원`);
+        draw();
+        if (isMobileLayout()) scheduleMobileViewportSync();
+      } else {
+        setStatus(`즐겨찾기 ${digit}번이 비어 있습니다 (Ctrl+${digit}로 저장)`);
+      }
+      e.preventDefault();
+      return;
+    }
+  }
+
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
   let handled = false;
   const k = e.key;
   if (k === "ArrowUp" || k === "w" || k === "W") {

@@ -201,6 +201,7 @@ async function setCellVisible(name, on, refit) {
   draw();
   const vis = [...state.renderer.cells.values()].filter((c) => c.visible).length;
   setStatus(`표시 중 ${vis}개 / 전체 ${state.renderer.cells.size}개`);
+  refreshObjects();
 }
 
 // ---- cell list UI ----
@@ -231,6 +232,7 @@ function buildCellList(idx) {
       });
       state.fitted = true;
       draw();
+      setObjScopeTo(g.name); // scope the object panel to the clicked cell
       if (isMobileLayout()) scheduleMobileViewportSync();
     });
     frag.appendChild(row);
@@ -300,6 +302,130 @@ document.getElementById("fitAll").addEventListener("click", () => {
   state.renderer.vp.fit(state.globalBounds); draw();
 });
 
+// ---- object-class panel: which S-57 classes the loaded cells contain, with
+// per-class show/hide. Distinguishes present classes from the full catalog. ----
+let objCatalog = null;   // acronym -> human-readable name
+let objCatalogTotal = 0; // total classes in the S-57 catalog
+const objListEl = document.getElementById("objlist");
+const objStatEl = document.getElementById("objstat");
+const objPanelEl = document.getElementById("panelObjs");
+
+function splitCsvLine(line) {
+  const out = []; let cur = "", q = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (q) { if (c === '"') { if (line[i + 1] === '"') { cur += '"'; i++; } else q = false; } else cur += c; }
+    else if (c === '"') q = true;
+    else if (c === ",") { out.push(cur); cur = ""; }
+    else cur += c;
+  }
+  out.push(cur);
+  return out.map((s) => s.trim());
+}
+
+async function loadObjCatalog() {
+  if (objCatalog) return objCatalog;
+  objCatalog = new Map();
+  try {
+    const txt = await (await fetch("assets/s57objectclasses.csv")).text();
+    const lines = txt.split(/\r?\n/);
+    for (let i = 1; i < lines.length; i++) {
+      if (!lines[i]) continue;
+      const cols = splitCsvLine(lines[i]);
+      if (cols.length < 3 || !cols[2]) continue;
+      objCatalog.set(cols[2], cols[1]); // acronym -> ObjectClass name
+    }
+    objCatalogTotal = objCatalog.size;
+  } catch { /* names optional */ }
+  return objCatalog;
+}
+
+function setObjScopeTo(name) {
+  populateObjScope();
+  const sel = document.getElementById("objscope");
+  if (sel) { sel.value = name; refreshObjects(); }
+}
+
+let objScopeFilled = false;
+function populateObjScope() {
+  if (objScopeFilled || !state.renderer) return;
+  const sel = document.getElementById("objscope");
+  const frag = document.createDocumentFragment();
+  for (const name of state.renderer.grid.map((g) => g.name).sort()) {
+    const o = document.createElement("option");
+    o.value = name; o.textContent = name.replace(/\.000$/i, "");
+    frag.appendChild(o);
+  }
+  sel.appendChild(frag);
+  objScopeFilled = true;
+}
+
+async function refreshObjects() {
+  if (!objPanelEl || objPanelEl.hidden || !state.renderer) return;
+  const scope = document.getElementById("objscope").value; // "" = all visible
+  if (scope) {
+    const cell = state.renderer.cells.get(scope);
+    if (cell && !cell.loaded) { objStatEl.textContent = `${scope} 불러오는 중…`; await ensureLoaded(scope); }
+  }
+  const stats = state.renderer.classStats(scope || undefined); // acronym -> count
+  const hidden = state.renderer.hiddenClasses;
+  const showAll = document.getElementById("objShowAll").checked;
+  const q = document.getElementById("objfilter").value.trim().toUpperCase();
+
+  let acronyms = showAll && objCatalog ? [...objCatalog.keys()] : [...stats.keys()];
+  acronyms.sort((a, b) => (stats.get(b) || 0) - (stats.get(a) || 0) || a.localeCompare(b));
+
+  const frag = document.createDocumentFragment();
+  for (const ac of acronyms) {
+    const cnt = stats.get(ac) || 0;
+    const name = (objCatalog && objCatalog.get(ac)) || "";
+    if (q && !ac.toUpperCase().includes(q) && !name.toUpperCase().includes(q)) continue;
+    const row = document.createElement("label");
+    row.className = "objrow" + (cnt === 0 ? " absent" : "");
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = !hidden.has(ac);
+    cb.disabled = cnt === 0;
+    cb.addEventListener("change", () => {
+      if (cb.checked) hidden.delete(ac); else hidden.add(ac);
+      draw();
+    });
+    const acEl = document.createElement("span"); acEl.className = "ac"; acEl.textContent = ac;
+    const nmEl = document.createElement("span"); nmEl.className = "nm"; nmEl.textContent = name;
+    const cntEl = document.createElement("span"); cntEl.className = "cnt"; cntEl.textContent = cnt || "";
+    row.append(cb, acEl, nmEl, cntEl);
+    frag.appendChild(row);
+  }
+  objListEl.replaceChildren(frag);
+
+  const present = stats.size;
+  const hiddenPresent = [...hidden].filter((h) => stats.has(h)).length;
+  const who = scope ? scope.replace(/\.000$/i, "") : "표시 중 전체";
+  objStatEl.textContent =
+    `${who} — 포함 ${present}종 / 전체 ${objCatalogTotal || "?"}종 · 표시 ${present - hiddenPresent}종`;
+}
+
+function showTab(which) {
+  const cells = which === "cells";
+  document.getElementById("panelCells").hidden = !cells;
+  document.getElementById("panelObjs").hidden = cells;
+  document.getElementById("tabCells").classList.toggle("active", cells);
+  document.getElementById("tabObjs").classList.toggle("active", !cells);
+  if (!cells) { populateObjScope(); loadObjCatalog().then(refreshObjects); }
+}
+document.getElementById("tabCells").addEventListener("click", () => showTab("cells"));
+document.getElementById("tabObjs").addEventListener("click", () => showTab("objs"));
+document.getElementById("objscope").addEventListener("change", refreshObjects);
+document.getElementById("objfilter").addEventListener("input", refreshObjects);
+document.getElementById("objShowAll").addEventListener("change", refreshObjects);
+document.getElementById("objAll").addEventListener("click", () => {
+  state.renderer.hiddenClasses.clear(); draw(); refreshObjects();
+});
+document.getElementById("objNone").addEventListener("click", () => {
+  for (const ac of state.renderer.classStats().keys()) state.renderer.hiddenClasses.add(ac);
+  draw(); refreshObjects();
+});
+
 async function loadMany(names, opts = {}) {
   const mobileLabel = opts.mobileLabel || "ENC 전체";
   const CONC = 4;
@@ -321,6 +447,7 @@ async function loadMany(names, opts = {}) {
   const vis = [...state.renderer.cells.values()].filter((c) => c.visible).length;
   setStatus(`표시 중 ${vis}개 / 전체 ${state.renderer.cells.size}개`);
   setMapLoading("");
+  refreshObjects();
 }
 
 // ---- file open / drag&drop (adds a cell) ----

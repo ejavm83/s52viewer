@@ -21,7 +21,7 @@
     border-right: 1px solid #2a3742;
   }
   #sidebar .pad { padding: 8px; display: flex; flex-direction: column; gap: 6px; }
-  #sidebar input[type=text] { width: 100%; padding: 4px 6px; background: #1c2733; color: #d4eaee; border: 1px solid #2a3742; }
+  #sidebar input[type=text], #sidebar select { width: 100%; padding: 4px 6px; background: #1c2733; color: #d4eaee; border: 1px solid #2a3742; }
   #sidebar .btns { display: flex; gap: 4px; flex-wrap: wrap; }
   #sidebar button { flex: 1; font-size: 11px; padding: 4px 2px; background: #233140; color: #d4eaee; border: 1px solid #2a3742; cursor: pointer; }
   #sidebar button:hover { background: #2e4255; }
@@ -30,6 +30,19 @@
   .cellrow:hover { background: #1c2733; }
   .cellrow.on { background: #1f3247; }
   .cellrow .dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; }
+  #sidebar .tabs { display: flex; flex-shrink: 0; }
+  #sidebar .tab { flex: 1; padding: 8px 4px; background: #1c2733; border: none; border-bottom: 2px solid transparent; color: #9fb4bb; cursor: pointer; font-size: 13px; }
+  #sidebar .tab.active { color: #d4eaee; border-bottom-color: #3498db; background: #11181f; }
+  #sidebar .panel { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  #sidebar .panel[hidden] { display: none; }
+  #objlist { flex: 1; overflow-y: auto; font-family: Consolas, monospace; font-size: 12px; }
+  #objstat { font-size: 11px; color: #9fb4bb; line-height: 1.4; }
+  .objrow { display: flex; align-items: center; gap: 6px; padding: 2px 8px; cursor: pointer; white-space: nowrap; }
+  .objrow:hover { background: #1c2733; }
+  .objrow .ac { font-weight: 600; }
+  .objrow .nm { color: #8aa0a8; overflow: hidden; text-overflow: ellipsis; }
+  .objrow .cnt { margin-left: auto; color: #6f8088; padding-left: 6px; }
+  .objrow.absent { opacity: .38; }
   #stage { flex: 1; position: relative; background: #73b6ef; overflow: hidden; }
   #chart { position: absolute; inset: 0; cursor: grab; }
   #chart:active { cursor: grabbing; }
@@ -111,15 +124,34 @@
   </div>
   <div id="main">
     <div id="sidebar">
-      <div class="pad">
-        <input type="text" id="filter" placeholder="셀 이름 검색…" />
-        <div class="btns">
-          <button id="showVisible">보이는영역 표시</button>
-          <button id="hideAll">모두 숨김</button>
-          <button id="fitAll">전체보기</button>
-        </div>
+      <div class="tabs">
+        <button id="tabCells" class="tab active">셀</button>
+        <button id="tabObjs" class="tab">오브젝트</button>
       </div>
-      <div id="celllist"></div>
+      <div id="panelCells" class="panel">
+        <div class="pad">
+          <input type="text" id="filter" placeholder="셀 이름 검색…" />
+          <div class="btns">
+            <button id="showVisible">보이는영역 표시</button>
+            <button id="hideAll">모두 숨김</button>
+            <button id="fitAll">전체보기</button>
+          </div>
+        </div>
+        <div id="celllist"></div>
+      </div>
+      <div id="panelObjs" class="panel" hidden>
+        <div class="pad">
+          <select id="objscope"><option value="">표시 중 전체(합산)</option></select>
+          <input type="text" id="objfilter" placeholder="오브젝트 검색(약어/이름)…" />
+          <label style="font-size:11px;"><input type="checkbox" id="objShowAll" /> 전체 카탈로그 보기(미포함 포함)</label>
+          <div class="btns">
+            <button id="objAll">모두 표시</button>
+            <button id="objNone">모두 숨김</button>
+          </div>
+          <div id="objstat"></div>
+        </div>
+        <div id="objlist"></div>
+      </div>
     </div>
     <div id="stage"><canvas id="chart"></canvas></div>
   </div>

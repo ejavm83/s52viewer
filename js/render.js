@@ -96,6 +96,7 @@ class Renderer {
     this.scaleOutFactor = 16;
     this.minDisplayCat = "Standard";
     this.depthUnit = "m"; // m | ft | fathom — sounding display unit
+    this.hiddenClasses = new Set(); // object-class acronyms hidden by the user
     this._labelBoxes = [];
     this.cells = new Map();
     this.grid = [];
@@ -205,6 +206,24 @@ class Renderer {
     return best;
   }
 
+  // Tally object classes -> feature count. With no argument: all loaded+visible
+  // cells combined. With a cell name: just that one cell (even if not visible),
+  // so a single .000 file's object composition can be inspected.
+  classStats(cellName) {
+    const m = new Map();
+    const cells = cellName
+      ? [this.cells.get(cellName)].filter(Boolean)
+      : [...this.cells.values()].filter((c) => c.visible);
+    for (const cell of cells) {
+      if (!cell.loaded || !cell.features) continue;
+      for (const feat of cell.features) {
+        if (!feat.geom && !feat.soundings) continue;
+        m.set(feat.acronym, (m.get(feat.acronym) || 0) + 1);
+      }
+    }
+    return m;
+  }
+
   render() {
     const ctx = this.ctx, vp = this.vp;
     const w = this.canvas.width, h = this.canvas.height;
@@ -236,6 +255,7 @@ class Renderer {
       }
       for (const feat of cell.features) {
         if (!feat.geom && !feat.soundings) continue;
+        if (this.hiddenClasses.has(feat.acronym)) continue; // per-object-class toggle
         if (!this.showGrid && ENC_BOUNDARY_WITH_GRID.has(feat.acronym)) continue;
         if (this.respectScamin) {
           const sc = parseFloat(feat.attrs.SCAMIN);

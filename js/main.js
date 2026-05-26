@@ -2,7 +2,7 @@ import { DDF } from "./iso8211.js";
 import { S57 } from "./s57.js";
 import { S52 } from "./s52.js";
 import { loadCatalog } from "./catalog.js";
-import { Renderer } from "./render.js?v=9";
+import { Renderer } from "./render.js?v=10";
 
 const ATLAS_BY_TABLE = {
   DAY_BRIGHT: "assets/rastersymbols-day.png",
@@ -33,6 +33,175 @@ const canvas = document.getElementById("chart");
 const statusEl = document.getElementById("status");
 const listEl = document.getElementById("celllist");
 const mapLoadingEl = document.getElementById("map-loading");
+const minimapCanvas = document.getElementById("minimap");
+const minimapWrap = document.getElementById("minimap-wrap");
+const scaleBarLabel = document.getElementById("scale-bar-label");
+const scaleBarTrack = document.getElementById("scale-bar-track");
+
+const R_EARTH = 6378137;
+const NM = 1852;
+
+function mercX(lonDeg) {
+  return (lonDeg * Math.PI) / 180;
+}
+function mercY(latDeg) {
+  const lat = (latDeg * Math.PI) / 180;
+  return Math.log(Math.tan(Math.PI / 4 + lat / 2));
+}
+
+/** 뷰포트와 동일한 공식: 화면 1픽셀당 지상 거리(m) */
+function metresPerPixel(vp) {
+  const phi = (vp.centerLat() * Math.PI) / 180;
+  return (R_EARTH * Math.cos(phi)) / vp.scale;
+}
+
+function niceLengthMeters(maxLen) {
+  if (!(maxLen > 0) || !Number.isFinite(maxLen)) return 1000;
+  const expFloor = Math.floor(Math.log10(maxLen));
+  const norm = maxLen / 10 ** expFloor;
+  const mant = norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10;
+  return mant * 10 ** expFloor;
+}
+
+function formatScaleLabel(meters) {
+  if (meters >= NM * 0.5) {
+    const nm = meters / NM;
+    return nm >= 10 ? `${Math.round(nm)} NM` : `${Number(nm.toFixed(1))} NM`;
+  }
+  if (meters >= 1000) {
+    const km = meters / 1000;
+    return km >= 100 ? `${Math.round(km)} km` : `${km.toFixed(km >= 10 ? 0 : 1)} km`;
+  }
+  return `${Math.round(meters)} m`;
+}
+
+function updateScaleBar() {
+  const vp = state.renderer?.vp;
+  if (!vp || !scaleBarLabel || !scaleBarTrack) return;
+  const mpp = metresPerPixel(vp);
+  const maxPx = Math.min(168, Math.max(72, canvas.width * 0.26));
+  const rawM = mpp * maxPx;
+  const snapM = niceLengthMeters(rawM);
+  const barPx = Math.max(28, Math.min(maxPx, snapM / mpp));
+  scaleBarLabel.textContent = formatScaleLabel(snapM);
+  scaleBarTrack.style.width = `${barPx}px`;
+}
+
+function syncMinimapSize() {
+  if (!minimapCanvas || !minimapWrap) return;
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.max(1, Math.round(minimapWrap.clientWidth * dpr));
+  const h = Math.max(1, Math.round(minimapWrap.clientHeight * dpr));
+  if (minimapCanvas.width !== w || minimapCanvas.height !== h) {
+    minimapCanvas.width = w;
+    minimapCanvas.height = h;
+  }
+}
+
+/**
+ * 전역 범위를 미니맵 캔버스에 맞춤.
+ * @returns {{ sx:(mx:number)=>number, sy:(my:number)=>number, inv:(px:number,py:number)=>[number,number], w:number, h:number } | null}
+ */
+function minimapTransform(gb, padPx) {
+  if (!gb || !minimapCanvas) return null;
+  const w = minimapCanvas.width;
+  const h = minimapCanvas.height;
+  const mx0 = mercX(gb.minX);
+  const mx1 = mercX(gb.maxX);
+  const my0 = mercY(gb.minY);
+  const my1 = mercY(gb.maxY);
+  const minMx = Math.min(mx0, mx1);
+  const maxMx = Math.max(mx0, mx1);
+  const minMy = Math.min(my0, my1);
+  const maxMy = Math.max(my0, my1);
+  const dx = maxMx - minMx || 1e-6;
+  const dy = maxMy - minMy || 1e-6;
+  const innerW = w - 2 * padPx;
+  const innerH = h - 2 * padPx;
+  const scale = Math.min(innerW / dx, innerH / dy);
+  const cx = (minMx + maxMx) / 2;
+  const cy = (minMy + maxMy) / 2;
+  const ox = w / 2;
+  const oy = h / 2;
+  return {
+    w,
+    h,
+    sx: (mx) => ox + (mx - cx) * scale,
+    sy: (my) => oy - (my - cy) * scale,
+    inv(px, py) {
+      return [cx + (px - ox) / scale, cy - (py - oy) / scale];
+    },
+  };
+}
+
+function updateMinimap() {
+  if (!state.renderer || !minimapCanvas || !state.globalBounds) return;
+  syncMinimapSize();
+  const gb = state.globalBounds;
+  const dpr = window.devicePixelRatio || 1;
+  const pad = Math.round(6 * dpr);
+  const tf = minimapTransform(gb, pad);
+  if (!tf) return;
+  const ctx = minimapCanvas.getContext("2d");
+  const { w, h } = tf;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = "rgba(218, 235, 248, 0.97)";
+  ctx.fillRect(0, 0, w, h);
+
+  for (const g of state.renderer.grid) {
+    const x0 = tf.sx(mercX(g.minX));
+    const y0 = tf.sy(mercY(g.maxY));
+    const x1 = tf.sx(mercX(g.maxX));
+    const y1 = tf.sy(mercY(g.minY));
+    const x = Math.min(x0, x1);
+    const y = Math.min(y0, y1);
+    const rw = Math.abs(x1 - x0);
+    const rh = Math.abs(y1 - y0);
+    const cell = state.renderer.cells.get(g.name);
+    const vis = cell?.visible;
+    ctx.fillStyle = vis ? "rgba(52, 152, 219, 0.32)" : "rgba(255,255,255,0.08)";
+    ctx.fillRect(x, y, rw, rh);
+    ctx.strokeStyle = vis ? "rgba(32, 102, 148, 0.55)" : "rgba(26, 37, 48, 0.2)";
+    ctx.lineWidth = 1 * dpr;
+    ctx.strokeRect(x + 0.5, y + 0.5, Math.max(0, rw - 1), Math.max(0, rh - 1));
+  }
+
+  const vp = state.renderer.vp;
+  const mw = canvas.width;
+  const mh = canvas.height;
+  const corners = [
+    vp.mercFromScreen(0, 0),
+    vp.mercFromScreen(mw, 0),
+    vp.mercFromScreen(mw, mh),
+    vp.mercFromScreen(0, mh),
+  ];
+  let minPx = Infinity;
+  let minPy = Infinity;
+  let maxPx = -Infinity;
+  let maxPy = -Infinity;
+  for (const [mx, my] of corners) {
+    const px = tf.sx(mx);
+    const py = tf.sy(my);
+    if (px < minPx) minPx = px;
+    if (py < minPy) minPy = py;
+    if (px > maxPx) maxPx = px;
+    if (py > maxPy) maxPy = py;
+  }
+  ctx.strokeStyle = "rgba(192, 57, 43, 0.92)";
+  ctx.lineWidth = 2 * dpr;
+  ctx.setLineDash([]);
+  ctx.strokeRect(minPx, minPy, maxPx - minPx, maxPy - minPy);
+
+  ctx.strokeStyle = "rgba(26, 37, 48, 0.45)";
+  ctx.lineWidth = 1 * dpr;
+  ctx.strokeRect(0.5, 0.5, w - 1, h - 1);
+}
+
+function updateMapOverlays() {
+  updateScaleBar();
+  updateMinimap();
+}
 
 function isMobileLayout() {
   return window.matchMedia("(max-width: 768px)").matches;
@@ -109,10 +278,32 @@ function resize() {
   const wrap = canvas.parentElement;
   canvas.width = wrap.clientWidth;
   canvas.height = wrap.clientHeight;
+  syncMinimapSize();
   // 첫 뷰 맞춤은 init() / openFile()에서만 수행 (모바일 전역 fit 덮어쓰기 방지)
   draw();
 }
 window.addEventListener("resize", resize);
+
+if (minimapWrap) {
+  minimapWrap.addEventListener("click", (e) => {
+    if (!state.renderer?.vp || !state.globalBounds) return;
+    const cvs = minimapCanvas;
+    if (!cvs) return;
+    const rect = cvs.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    const dpr = window.devicePixelRatio || 1;
+    syncMinimapSize();
+    const tf = minimapTransform(state.globalBounds, Math.round(6 * dpr));
+    if (!tf) return;
+    const px = ((e.clientX - rect.left) / rect.width) * cvs.width;
+    const py = ((e.clientY - rect.top) / rect.height) * cvs.height;
+    const [mx, my] = tf.inv(px, py);
+    state.renderer.vp.cx = mx;
+    state.renderer.vp.cy = my;
+    draw();
+    if (isMobileLayout()) scheduleMobileViewportSync();
+  });
+}
 
 let _rafPending = false;
 function draw() {
@@ -121,6 +312,7 @@ function draw() {
   requestAnimationFrame(() => {
     _rafPending = false;
     state.renderer.render();
+    updateMapOverlays();
   });
 }
 
@@ -219,21 +411,13 @@ function buildCellList(idx) {
     dot.className = "dot";
     dot.style.background = bandColor(g.name);
     const txt = document.createElement("span");
+    txt.className = "cellname";
     txt.textContent = g.name.replace(/\.000$/i, "");
-    txt.title = `1:${g.cscl || "?"}  [${g.minX.toFixed(2)},${g.minY.toFixed(2)}]→[${g.maxX.toFixed(2)},${g.maxY.toFixed(2)}]`;
+    txt.title = `${g.name} — 1:${g.cscl || "?"}  [${g.minX.toFixed(2)},${g.minY.toFixed(2)}]→[${g.maxX.toFixed(2)},${g.maxY.toFixed(2)}]`;
     row.append(cb, dot, txt);
     row.addEventListener("click", () => {
-      state.renderer.gridFocusName = g.name;
-      state.renderer.vp.fit({
-        minX: g.minX,
-        minY: g.minY,
-        maxX: g.maxX,
-        maxY: g.maxY,
-      });
-      state.fitted = true;
-      draw();
+      focusViewportToCellName(g.name);
       setObjScopeTo(g.name); // scope the object panel to the clicked cell
-      if (isMobileLayout()) scheduleMobileViewportSync();
     });
     frag.appendChild(row);
     rows.set(g.name, { checkbox: cb, el: row });
@@ -244,6 +428,20 @@ function syncRow(name) {
   const r = rows.get(name);
   const cell = state.renderer.cells.get(name);
   if (r && cell) { r.checkbox.checked = cell.visible; r.el.classList.toggle("on", cell.visible); }
+}
+
+/** 지도·목록에서 마지막으로 포커스한 셀(.000) — 툴바·셀 목록 강조 */
+function syncCellListFocus(scrollList = true) {
+  const name = state.renderer?.gridFocusName || "";
+  for (const [n, r] of rows) r.el.classList.toggle("focus", n === name);
+  if (focusedCellEl) {
+    focusedCellEl.textContent = name ? `보는 셀: ${name}` : "";
+    focusedCellEl.title = name ? `현재 ENC: ${name}` : "지도에서 마지막으로 포커스한 ENC 셀(.000)";
+  }
+  if (scrollList) {
+    const r = name ? rows.get(name) : null;
+    if (r?.el) r.el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }
 }
 function bandColor(name) {
   const m = name.match(/^[A-Z]{2}(\d)/i);
@@ -304,7 +502,8 @@ document.getElementById("fitAll").addEventListener("click", () => {
 
 // ---- object-class panel: which S-57 classes the loaded cells contain, with
 // per-class show/hide. Distinguishes present classes from the full catalog. ----
-let objCatalog = null;   // acronym -> human-readable name
+let objCatalog = null;   // acronym -> human-readable name (English)
+let objCatalogKo = null; // acronym (uppercase) -> Korean label
 let objCatalogTotal = 0; // total classes in the S-57 catalog
 const objListEl = document.getElementById("objlist");
 const objStatEl = document.getElementById("objstat");
@@ -326,6 +525,7 @@ function splitCsvLine(line) {
 async function loadObjCatalog() {
   if (objCatalog) return objCatalog;
   objCatalog = new Map();
+  objCatalogKo = new Map();
   try {
     const txt = await (await fetch("assets/s57objectclasses.csv")).text();
     const lines = txt.split(/\r?\n/);
@@ -337,6 +537,16 @@ async function loadObjCatalog() {
     }
     objCatalogTotal = objCatalog.size;
   } catch { /* names optional */ }
+  try {
+    const txtKo = await (await fetch("assets/s57objectclasses-ko.csv")).text();
+    const koLines = txtKo.split(/\r?\n/);
+    for (let i = 1; i < koLines.length; i++) {
+      if (!koLines[i]) continue;
+      const cols = splitCsvLine(koLines[i]);
+      if (cols.length < 2 || !cols[0]) continue;
+      objCatalogKo.set(cols[0].toUpperCase(), cols[1]);
+    }
+  } catch { /* Korean labels optional */ }
   return objCatalog;
 }
 
@@ -344,6 +554,24 @@ function setObjScopeTo(name) {
   populateObjScope();
   const sel = document.getElementById("objscope");
   if (sel) { sel.value = name; refreshObjects(); }
+}
+
+/** 인덱스 셀 범위로 뷰 이동(오브젝트 범위 선택·셀 행 클릭 등에서 공통 사용) */
+function focusViewportToCellName(name) {
+  if (!name || !state.renderer) return;
+  const g = state.renderer.grid.find((x) => x.name === name);
+  if (!g) return;
+  state.renderer.gridFocusName = name;
+  state.renderer.vp.fit({
+    minX: g.minX,
+    minY: g.minY,
+    maxX: g.maxX,
+    maxY: g.maxY,
+  });
+  state.fitted = true;
+  draw();
+  syncCellListFocus();
+  if (isMobileLayout()) scheduleMobileViewportSync();
 }
 
 let objScopeFilled = false;
@@ -379,7 +607,8 @@ async function refreshObjects() {
   for (const ac of acronyms) {
     const cnt = stats.get(ac) || 0;
     const name = (objCatalog && objCatalog.get(ac)) || "";
-    if (q && !ac.toUpperCase().includes(q) && !name.toUpperCase().includes(q)) continue;
+    const ko = (objCatalogKo && objCatalogKo.get(ac.toUpperCase())) || "";
+    if (q && !ac.toUpperCase().includes(q) && !name.toUpperCase().includes(q) && !(ko && ko.toUpperCase().includes(q))) continue;
     const row = document.createElement("label");
     row.className = "objrow" + (cnt === 0 ? " absent" : "");
     const cb = document.createElement("input");
@@ -391,9 +620,15 @@ async function refreshObjects() {
       draw();
     });
     const acEl = document.createElement("span"); acEl.className = "ac"; acEl.textContent = ac;
+    const nmWrap = document.createElement("span"); nmWrap.className = "nmwrap";
     const nmEl = document.createElement("span"); nmEl.className = "nm"; nmEl.textContent = name;
+    nmWrap.appendChild(nmEl);
+    if (ko) {
+      const koEl = document.createElement("span"); koEl.className = "ko"; koEl.textContent = ko;
+      nmWrap.appendChild(koEl);
+    }
     const cntEl = document.createElement("span"); cntEl.className = "cnt"; cntEl.textContent = cnt || "";
-    row.append(cb, acEl, nmEl, cntEl);
+    row.append(cb, acEl, nmWrap, cntEl);
     frag.appendChild(row);
   }
   objListEl.replaceChildren(frag);
@@ -415,7 +650,11 @@ function showTab(which) {
 }
 document.getElementById("tabCells").addEventListener("click", () => showTab("cells"));
 document.getElementById("tabObjs").addEventListener("click", () => showTab("objs"));
-document.getElementById("objscope").addEventListener("change", refreshObjects);
+document.getElementById("objscope").addEventListener("change", (e) => {
+  const v = e.target.value;
+  if (v) focusViewportToCellName(v);
+  refreshObjects();
+});
 document.getElementById("objfilter").addEventListener("input", refreshObjects);
 document.getElementById("objShowAll").addEventListener("change", refreshObjects);
 document.getElementById("objAll").addEventListener("click", () => {
@@ -472,13 +711,19 @@ async function openFile(file) {
     cell.features = chart.features; cell.loaded = true; cell.visible = true; cell.chartBounds = chart.bounds;
   }
   state.renderer.vp.fit(chart.bounds); state.fitted = true;
+  state.renderer.gridFocusName = file.name;
   draw();
+  syncCellListFocus();
   setStatus(`${file.name}: 피처 ${chart.features.length}개`);
 }
 
 async function loadFromUrl(url) {
   const name = url.split("/").pop();
   await setCellVisible(name, true, true);
+  if (state.renderer) {
+    state.renderer.gridFocusName = name;
+    syncCellListFocus();
+  }
 }
 
 // ---- view options ----
@@ -497,6 +742,10 @@ document.getElementById("declutter").addEventListener("change", (e) => { state.r
 document.getElementById("grid").addEventListener("change", (e) => {
   state.renderer.showGrid = e.target.checked;
   if (e.target.checked) state.renderer.invalidateEncBoundaryResIfStale();
+  draw();
+});
+document.getElementById("graticule").addEventListener("change", (e) => {
+  state.renderer.showGraticule = e.target.checked;
   draw();
 });
 document.getElementById("scaledisp").addEventListener("change", (e) => { state.renderer.scaleDisplay = e.target.checked; draw(); });
@@ -604,6 +853,7 @@ canvas.addEventListener("click", (e) => {
   const hit = pickCell(mx, my);
   if (hit) {
     state.renderer.gridFocusName = hit;
+    syncCellListFocus(false);
     setCellVisible(hit, !state.renderer.cells.get(hit).visible, false);
   }
 });

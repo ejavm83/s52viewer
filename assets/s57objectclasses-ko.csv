@@ -1,0 +1,218 @@
+Acronym,Korean
+$AREAS,주제도 영역
+$COMPS,나침반(주제도)
+$CSYMB,주제도 심볼
+$LINES,주제도 선
+$TEXTS,주제도 문자
+ACHARE,정박 구역
+ACHBRT,정박 부지
+ACHPNT,닻(앵커)
+ADMARE,행정 구역(명명)
+AIRARE,비행장
+ANNOTA,주석
+BCNCAR,방위 표지(등대)
+BCNISD,고립위험 표지
+BCNLAT,측방 표지
+BCNSAW,안전수역 표지
+BCNSPP,특수목적 표지
+BCNWTW,수로 표지
+BERTHS,선석
+BOYCAR,방위 부표
+BOYINB,시설 부표
+BOYISD,고립위험 부표
+BOYLAT,측방 부표
+BOYSAW,안전수역 부표
+BOYSPP,특수목적 부표
+BOYWTW,수로 부표
+BRGARE,교량 구역
+BRIDGE,교량
+BUAARE,시가지
+BUIREL,종교 건물
+BUISGL,단독 건물
+BUNSTA,벙커 시설
+CANALS,운하
+CANBNK,운하 제방
+CAUSWY,둑길
+CBLARE,케이블 구역
+CBLOHD,가공 케이블
+CBLSUB,해저 케이블
+CGUSTA,해안경비대 시설
+CHKPNT,검문소
+CHNWIR,사슬·와이어
+COALNE,해안선
+COMARE,통신 구역
+CONVYR,컨베이어
+CONZNE,접속수역
+COSARE,대륙붕 구역
+CRANES,크레인
+CTNARE,주의 구역
+CTRPNT,기준점
+CTSARE,화물 환적 구역
+CURENT,조류(비중력)
+CUSZNE,세관 구역
+C_AGGR,집합
+C_ASSO,연관
+C_STAC,적층
+DAMCON,댐
+DAYMAR,주간표지
+DEPARE,수심 구역
+DEPCNT,수심 등치선
+DISMAR,거리 표지
+DMPGRD,투기장
+DOCARE,부두 구역
+DRGARE,준설 구역
+DRYDOC,건거독
+DWRTCL,심수로 중심선
+DWRTPT,심수로 구간
+DYKCON,제방
+EXCNST,특수 항행 구조물
+EXEZNE,배타적 경제수역
+FAIRWY,항로
+FERYRT,페리 항로
+FLODOC,부선거(플로팅 독)
+FNCLNE,울타리·담장
+FOGSIG,안개신호
+FORSTC,요새 시설
+FRPARE,자유무역항 구역
+FSHFAC,어업 시설
+FSHGRD,어장
+FSHZNE,어업 구역
+GATCON,수문
+GENNAV,일반 해도표지
+GRIDRN,그리드론
+HRBARE,항만 구역(행정)
+HRBBSN,항만 분지
+HRBFAC,항만 시설
+HULKES,폐선(헐크)
+ICEARE,유빙 구역
+ICNARE,소각 구역
+ISTZNE,연안 교통 구역
+LAKARE,호수
+LAKSHR,호숫가
+LG_SDM,허용 최대 선박 치수
+LG_VSP,허용 최대 선속
+LIGHTS,등명기
+LITFLT,등부표
+LITVES,등선
+LKBSPT,수문 분지 구간
+LNDARE,육지 구역
+LNDELV,육지 고도
+LNDMRK,랜드마크
+LNDRGN,육지 지역
+LOCMAG,국부 자기이상
+LOGPON,벌목 구역
+LOKARE,수문 구역
+LOKBSN,수문 분지
+MAGVAR,자기 편차
+MARCUL,해상 양식장
+MIPARE,군사 훈련 구역
+MONUMT,기념비
+MORFAC,계류 시설
+M_ACCY,데이터 정확도
+M_COVR,커버리지
+M_CSCL,편집 축척
+M_HDAT,수평 기준면
+M_HOPA,수평 기준 이동량
+M_NPUB,해도 출판 정보
+M_NSYS,해도표지 체계
+M_PROD,제작 정보
+M_QUAL,데이터 품질
+M_SDAT,수심 기준면
+M_SREL,측량 신뢰도
+M_UNIT,측정 단위
+M_VDAT,수직 기준면
+NAVLNE,항법선
+NEWOBJ,신규 오브젝트
+NOTMRK,고지 표지
+OBSTRN,장애물
+OFSPLF,해상 시추 플랫폼
+OILBAR,유류 차단막
+OSPARE,해상 생산 구역
+PILBOP,도선 승선 지점
+PILPNT,말뚝
+PIPARE,파이프라인 구역
+PIPOHD,가공 파이프라인
+PIPSOL,해저·육상 파이프라인
+PONTON,부잔교
+PRCARE,주의 구역(항행)
+PRDARE,생산·저장 구역
+PRTARE,항만 구역
+PYLONS,교각·탑
+RADLNE,레이더선
+RADRFL,레이더 반사기
+RADRNG,레이더 사거리
+RADSTA,레이더국
+RAILWY,철도
+RAPIDS,급류
+RCRTCL,추천 항로 중심선
+RCTLPT,추천 교통로 구간
+RDOCAL,무선 보고 지점
+RDOSTA,무선국
+RECTRC,추천 항적
+REFDMP,쓰레기 투기장
+RESARE,제한 구역
+RESTRC,일반 경계
+RETRFL,후방반사기
+RIVBNK,강둑
+RIVERS,하천
+ROADWY,도로
+RSCSTA,구조대 시설
+RTPBCN,레이더 응답 비콘
+RTPLPT,항로 계획 지점
+RUNWAY,활주로
+SBDARE,저질 구역
+SEAARE,해역·명명 수역
+SILTNK,사일로·탱크
+SISTAT,교통 신호소
+SISTAW,경고 신호소
+SLCONS,해안 공사물
+SLOGRD,경사지
+SLOTOP,경사 상단선
+SMCFAC,소형선 시설
+SNDWAV,모래 물결
+SOUNDG,수심측량값
+SPLARE,수상기 착륙 구역
+SPRING,샘
+SQUARE,광장
+STSLNE,직선 영해기선
+SUBTLN,잠수함 통항 수로
+SWPARE,소해 구역
+TERMNL,터미널
+TESARE,영해
+TIDEWY,조수로
+TISDGE,시간표
+TOPMAR,두표
+TOWERS,탑
+TRFLNE,교통선
+TRNBSN,선회 분지
+TSELNE,분리 항로선
+TSEZNE,분리 항로 구역
+TSSBND,분리 항로 경계
+TSSCRS,분리 항로 교차
+TSSLPT,분리 항로 차선 구간
+TSSRON,분리 항로 로터리
+TS_FEB,만조·간조 조류
+TS_PAD,조류 패널 자료
+TS_PNH,조류 비조화 예측
+TS_PRH,조류 조화 예측
+TS_TIS,조류 시계열
+TUNNEL,터널
+TWRTPT,양방향 항로 구간
+T_HMON,조석 조화 예측
+T_NHMN,조석 비조화 예측
+T_TIMS,조석 시계열
+UNSARE,미측량 구역
+UWTROC,수중 암초
+VEGATN,식생
+VEHTRF,차량 이송
+WATFAL,폭포
+WATTUR,난류
+WEDKLP,해조류
+WRECKS,침몰선
+WTWARE,수로 구역
+WTWAXS,수로 축선
+WTWGAG,수로 계측
+WTWPRF,수로 단면
+ZEMCNT,영미터 등고선
+_EXTGN,소등 등명기
+_TEXTO,텍스트

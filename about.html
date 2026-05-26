@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>S-52 ENC Viewer — 프로그램 설명</title>
+<style>
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    min-height: 100%;
+    font-family: "Segoe UI", "Malgun Gothic", sans-serif;
+    background: #0d1218;
+    color: #d4eaee;
+    line-height: 1.55;
+    font-size: 15px;
+  }
+  header {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px 16px;
+    padding: 10px 16px;
+    background: #1c2733;
+    border-bottom: 1px solid #2a3742;
+    box-shadow: 0 2px 12px rgba(0,0,0,.35);
+  }
+  header h1 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  header a {
+    color: #7ec8f7;
+    text-decoration: none;
+    font-size: 14px;
+    white-space: nowrap;
+  }
+  header a:hover { text-decoration: underline; }
+  #content {
+    max-width: 52rem;
+    margin: 0 auto;
+    padding: 20px 18px 48px;
+  }
+  #content h1 { font-size: 1.55rem; margin: 1.6em 0 .6em; border-bottom: 1px solid #2a3742; padding-bottom: .35em; }
+  #content h2 { font-size: 1.25rem; margin: 1.4em 0 .5em; color: #b8dce8; }
+  #content h3 { font-size: 1.08rem; margin: 1.2em 0 .45em; color: #9fb4bb; }
+  #content p { margin: .65em 0; }
+  #content hr { border: none; border-top: 1px solid #2a3742; margin: 2em 0; }
+  #content a { color: #5dade2; }
+  #content ul, #content ol { padding-left: 1.35em; margin: .5em 0; }
+  #content li { margin: .25em 0; }
+  #content code {
+    font-family: Consolas, "Cascadia Mono", monospace;
+    font-size: .88em;
+    background: #1c2733;
+    padding: .12em .4em;
+    border-radius: 4px;
+    border: 1px solid #2a3742;
+  }
+  #content pre {
+    background: #11181f;
+    border: 1px solid #2a3742;
+    border-radius: 6px;
+    padding: 12px 14px;
+    overflow-x: auto;
+    font-size: 13px;
+    line-height: 1.45;
+  }
+  #content pre code {
+    background: none;
+    border: none;
+    padding: 0;
+    font-size: inherit;
+  }
+  #content table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 1em 0;
+    font-size: 14px;
+  }
+  #content th, #content td {
+    border: 1px solid #2a3742;
+    padding: 8px 10px;
+    text-align: left;
+    vertical-align: top;
+  }
+  #content th { background: #1c2733; color: #b8dce8; }
+  #content tr:nth-child(even) td { background: rgba(28,39,51,.45); }
+  #load-error {
+    display: none;
+    max-width: 52rem;
+    margin: 24px auto;
+    padding: 16px 18px;
+    background: #2c1f1f;
+    border: 1px solid #5c3535;
+    border-radius: 8px;
+    color: #f5c6cb;
+  }
+  #load-error[aria-hidden="false"] { display: block; }
+  #loading { padding: 48px 18px; text-align: center; color: #9fb4bb; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>S-52 ENC Viewer — 프로그램 설명</h1>
+    <a href="index.html">← 뷰어로 돌아가기</a>
+  </header>
+  <p id="loading" role="status">문서를 불러오는 중…</p>
+  <div id="load-error" role="alert" aria-hidden="true"></div>
+  <article id="content" hidden></article>
+  <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+  <script>
+    (function () {
+      var MD_PATH = "docs/코드-설명.md";
+      var loading = document.getElementById("loading");
+      var errBox = document.getElementById("load-error");
+      var content = document.getElementById("content");
+
+      function showError(msg) {
+        loading.hidden = true;
+        errBox.textContent = msg;
+        errBox.setAttribute("aria-hidden", "false");
+      }
+
+      fetch(MD_PATH, { cache: "no-store" })
+        .then(function (r) {
+          if (!r.ok) throw new Error("HTTP " + r.status);
+          return r.text();
+        })
+        .then(function (text) {
+          if (typeof marked === "undefined" || !marked.parse) {
+            throw new Error("marked 라이브러리를 불러오지 못했습니다.");
+          }
+          marked.setOptions({ gfm: true, breaks: false });
+          content.innerHTML = marked.parse(text);
+          loading.hidden = true;
+          content.hidden = false;
+        })
+        .catch(function () {
+          showError(
+            "문서를 표시할 수 없습니다. 같은 폴더에서 웹 서버로 여세요(예: npm run serve). " +
+            "또는 편집기에서 docs 폴더의 코드-설명.md 파일을 직접 열어보세요."
+          );
+        });
+    })();
+  </script>
+</body>
+</html>

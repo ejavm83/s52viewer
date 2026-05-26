@@ -101,6 +101,8 @@ class Renderer {
     this.cells = new Map();
     this.grid = [];
     this.showGrid = false;
+    /** 화면에 위도·경도 등간격 눈금선(경위도선) */
+    this.showGraticule = false;
     /** 사이드바/지도에서 마지막으로 포커스한 셀 — 격자 표시 시 경계를 강조 */
     this.gridFocusName = null;
     this.lastStats = null;
@@ -325,6 +327,7 @@ class Renderer {
     }
 
     if (this.showGrid) this._drawGrid();
+    if (this.showGraticule) this._drawGraticule(winMinX, winMaxX, winMinY, winMaxY);
     this.lastStats = { drawn, culled, denom: Math.round(denom) };
   }
 
@@ -358,6 +361,163 @@ class Renderer {
       const g = this.grid.find((e) => e.name === focus);
       if (g) this._drawGridCell(g, true);
     }
+    ctx.restore();
+  }
+
+  /** 화면 가시 Mercator 창 → 도 단위 경계(눈금 간격·라벨용) */
+  _viewLonLatDeg(winMinX, winMaxX, winMinY, winMaxY) {
+    const RAD = 180 / Math.PI;
+    const lonMin = winMinX * RAD;
+    const lonMax = winMaxX * RAD;
+    const latMin = (2 * Math.atan(Math.exp(winMinY)) - Math.PI / 2) * RAD;
+    const latMax = (2 * Math.atan(Math.exp(winMaxY)) - Math.PI / 2) * RAD;
+    return { lonMin, lonMax, latMin, latMax };
+  }
+
+  /** 화면에 대략 `targetLines`개 안팎의 눈금이 나오도록 도 단위 간격 선택 */
+  _graticuleStep(degSpan) {
+    if (!(degSpan > 0)) return 1;
+    const targetLines = 18;
+    const raw = degSpan / targetLines;
+    const pow10 = 10 ** Math.floor(Math.log10(raw));
+    const norm = raw / pow10;
+    let nice = 10;
+    if (norm < 1.2) nice = 1;
+    else if (norm < 1.85) nice = 1.5;
+    else if (norm < 3.2) nice = 2;
+    else if (norm < 4.8) nice = 2.5;
+    else if (norm < 7.2) nice = 5;
+    return nice * pow10;
+  }
+
+  _graticuleLabelDecimals(stepDeg) {
+    if (stepDeg >= 5) return 1;
+    if (stepDeg >= 1) return 2;
+    const dec = 2 - Math.floor(Math.log10(stepDeg));
+    return Math.min(5, Math.max(2, dec));
+  }
+
+  _formatLonLabel(deg, stepDeg) {
+    const hem = deg >= 0 ? "E" : "W";
+    const a = Math.abs(deg);
+    const dec = this._graticuleLabelDecimals(stepDeg);
+    const s = String(Number(a.toFixed(dec)));
+    return `${s}°${hem}`;
+  }
+
+  _formatLatLabel(deg, stepDeg) {
+    const hem = deg >= 0 ? "N" : "S";
+    const a = Math.abs(deg);
+    const dec = this._graticuleLabelDecimals(stepDeg);
+    const s = String(Number(a.toFixed(dec)));
+    return `${s}°${hem}`;
+  }
+
+  /** 가느다란 선 + 약한 헤일로(밝은 배경에서도 식별) */
+  _strokeGraticuleSegment(ctx, x0, y0, x1, y1) {
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    ctx.lineTo(x1, y1);
+    ctx.setLineDash(EMPTY_DASH);
+    ctx.strokeStyle = "rgba(8,32,58,0.42)";
+    ctx.lineWidth = 1.15;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    ctx.lineTo(x1, y1);
+    ctx.strokeStyle = "rgba(255,255,255,0.78)";
+    ctx.lineWidth = 0.65;
+    ctx.setLineDash([4, 4]);
+    ctx.stroke();
+  }
+
+  _drawGraticuleLabel(ctx, text, x, y, alignBaseline) {
+    ctx.font = "600 10px ui-monospace, Consolas, monospace";
+    const padX = 5, padY = 3;
+    const m = ctx.measureText(text);
+    const tw = Math.ceil(m.width) + padX * 2;
+    const th = 14 + padY * 2;
+    let bx = x, by = y;
+    if (alignBaseline === "bottom") {
+      bx = x - tw / 2;
+      by = y - th;
+    } else {
+      /* 왼쪽 가장자리 고정(위도 라벨) */
+      bx = x;
+      by = y - th / 2;
+    }
+    bx = Math.max(2, Math.min(bx, this.canvas.width - tw - 2));
+    by = Math.max(2, Math.min(by, this.canvas.height - th - 2));
+    ctx.fillStyle = "rgba(6,22,42,0.88)";
+    ctx.strokeStyle = "rgba(255,255,255,0.35)";
+    ctx.lineWidth = 1;
+    ctx.setLineDash(EMPTY_DASH);
+    const r = 3;
+    if (typeof ctx.roundRect === "function") {
+      ctx.beginPath();
+      ctx.roundRect(bx, by, tw, th, r);
+      ctx.fill();
+      ctx.stroke();
+    } else {
+      ctx.fillRect(bx, by, tw, th);
+    }
+    ctx.fillStyle = "#f2f8ff";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(text, bx + tw / 2, by + th / 2);
+    ctx.textAlign = "left";
+  }
+
+  _drawGraticule(winMinX, winMaxX, winMinY, winMaxY) {
+    const ctx = this.ctx, vp = this.vp;
+    const { lonMin, lonMax, latMin, latMax } = this._viewLonLatDeg(winMinX, winMaxX, winMinY, winMaxY);
+    const lonSpan = lonMax - lonMin;
+    const latSpan = latMax - latMin;
+    const lonStep = this._graticuleStep(lonSpan);
+    const latStep = this._graticuleStep(latSpan);
+    const h = this.canvas.height;
+    const lonStart = Math.ceil(lonMin / lonStep) * lonStep;
+    const lonVisible = [];
+    for (let L = lonStart; L <= lonMax + 1e-9; L += lonStep) {
+      const mx = mercX(L);
+      if (mx >= winMinX - 1e-6 && mx <= winMaxX + 1e-6) lonVisible.push(L);
+    }
+    const latStart = Math.ceil(latMin / latStep) * latStep;
+    const latVisible = [];
+    for (let La = latStart; La <= latMax + 1e-9; La += latStep) {
+      const my = mercY(La);
+      if (my >= winMinY - 1e-6 && my <= winMaxY + 1e-6) latVisible.push(La);
+    }
+    const lonLabelEvery = Math.max(1, Math.ceil(lonVisible.length / 14));
+    const latLabelEvery = Math.max(1, Math.ceil(latVisible.length / 12));
+
+    ctx.save();
+
+    for (let i = 0; i < lonVisible.length; i++) {
+      const L = lonVisible[i];
+      const x = vp.sx(mercX(L));
+      const y0 = vp.sy(winMinY), y1 = vp.sy(winMaxY);
+      this._strokeGraticuleSegment(ctx, x, y0, x, y1);
+      if (i % lonLabelEvery === 0) {
+        const lab = this._formatLonLabel(L, lonStep);
+        this._drawGraticuleLabel(ctx, lab, x, h - 2, "bottom");
+      }
+    }
+
+    for (let i = 0; i < latVisible.length; i++) {
+      const La = latVisible[i];
+      const y = vp.sy(mercY(La));
+      const x0 = vp.sx(winMinX), x1 = vp.sx(winMaxX);
+      this._strokeGraticuleSegment(ctx, x0, y, x1, y);
+      if (i % latLabelEvery === 0) {
+        const lab = this._formatLatLabel(La, latStep);
+        this._drawGraticuleLabel(ctx, lab, 6, y, "left");
+      }
+    }
+
+    ctx.setLineDash(EMPTY_DASH);
     ctx.restore();
   }
 

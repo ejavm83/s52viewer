@@ -19,6 +19,7 @@ const MIME = {
   ".csv": "text/csv; charset=utf-8",
   ".png": "image/png",
   ".json": "application/json",
+  ".md": "text/markdown; charset=utf-8",
   ".000": "application/octet-stream",
 };
 

@@ -42,6 +42,8 @@ const FLOW_ARROW_MIN_DIST_PX = 64;
  */
 const NAVAID_ACRONYM_RE = /^(BOY|BCN|LIGHTS|MORFAC|LNDMRK|TOPMAR|DAYMAR|RTPBCN|RDOSTA|RADRFL|RADSTA|RTPSTA|RSCSTA|SISTAT|SISTAW|SBDARE|PILBOP|PILPNT|OFSPLF|RETRFL|SLCONS)/;
 const NAVAID_DEDUP_PX = 24;
+/** 동일 문자열 라벨(예: "안좌도")이 화면상 이 거리 안에 이미 있으면 중복 표기로 보고 스킵. */
+const TEXT_DEDUP_PX = 60;
 
 /**
  * navaid dedup 그룹 키 — 같은 그룹의 심볼이 NAVAID_DEDUP_PX 이내에 이미
@@ -150,6 +152,23 @@ class Viewport {
     this.mode = "mercator";        // "mercator" | "globe"
     this.auto3D = true;            // 임계 scale 아래면 자동 globe
     this._globeLat = 0;            // globe 중심 위도(라디안)
+    /** fit 등으로 맞춘 뷰보다 휠/키로 더 축소(scale 더 감소)하지 못하게 하는 하한. null이면 미사용. */
+    this.zoomOutMinScale = null;
+  }
+  /**
+   * 범위 맞춤(fit) 직후 호출: 지금 scale만큼은 축소해 둘 수 있게 허용 하한을 넓힌다.
+   * (셀 맞춤처럼 확대된 fit은 min을 낮추지 않는다 — Math.min으로 이전 전역 맞춤 한계 유지.)
+   */
+  applyZoomOutLimitAfterFit() {
+    const s = this.scale;
+    if (!Number.isFinite(s) || s <= 0) return;
+    this.zoomOutMinScale = this.zoomOutMinScale == null ? s
+      : Math.min(this.zoomOutMinScale, s);
+  }
+  /** 사용자 줌 입력용: zoomOutMinScale 미만으로 내려가지 않게 한다. */
+  clampScaleForUserZoom(s) {
+    if (this.zoomOutMinScale == null || !Number.isFinite(s)) return s;
+    return Math.max(s, this.zoomOutMinScale);
   }
   fit(bounds) {
     const w = this.canvas.width, h = this.canvas.height;
@@ -259,6 +278,38 @@ class Viewport {
     const r = this.globeRadius();
     return { x: cx + xv / mag * r, y: cy - yv / mag * r, visible: false };
   }
+  /**
+   * 천구 방향(lon,lat)을 `projPerspective`와 동일한 (xv,yv,zv) 회전으로 뷰 축에 맞춘 뒤,
+   * **구 림의 방위각**으로만 화면에 놓는다. 반지름은 `rhoMin`~**캔버스 모서리**(`hypot(cx,cy)`)까지
+   * 제곱 보간으로 채워 얇은 고리가 되지 않게 한다.
+   * 무한 원근으로 “하늘”에 두면 대부분의 방향이 지구 디스크 안에 사영되어 별이 사라지는
+   * 문제를 피하면서, 지구본 회전에 따라 별 위치가 같이 바뀐다.
+   * @param skyT [0,1] — 고리 안쪽·바깥쪽 반지름 보간
+   * @returns {{ x: number, y: number } | null} 시선축 극 근처(mag≈0)면 null
+   */
+  globeCelestialToSkyRing(lonRad, latRad, skyT) {
+    const cLon = this.cx;
+    const cLat = this._globeLat;
+    const cosLat = Math.cos(latRad), sinLat = Math.sin(latRad);
+    const cosCLat = Math.cos(cLat), sinCLat = Math.sin(cLat);
+    const dLon = lonRad - cLon;
+    const cosDLon = Math.cos(dLon), sinDLon = Math.sin(dLon);
+    const xv = cosLat * sinDLon;
+    const yv = cosCLat * sinLat - sinCLat * cosLat * cosDLon;
+    const mag = Math.hypot(xv, yv);
+    if (mag < 1e-5) return null;
+    const R = this.globeRadius();
+    const cx = this.canvas.width / 2, cy = this.canvas.height / 2;
+    const t = Math.max(0, Math.min(1, skyT));
+    const rhoMin = R * 1.03;
+    // 모서리까지 넓은 하늘(이전: min(w,h)*0.49 ≈ R에 가까워 얇은 띠만 생김)
+    const rhoMax = Math.hypot(cx, cy) * 0.96;
+    const r0 = rhoMin * rhoMin;
+    const r1 = rhoMax * rhoMax;
+    const rho = r1 > r0 ? Math.sqrt(r0 + t * (r1 - r0)) : rhoMin;
+    // `projPerspective` 뒷면 림과 동일한 방위: (xv/mag, -yv/mag) × rho
+    return { x: cx + (xv / mag) * rho, y: cy - (yv / mag) * rho };
+  }
   /** 구버전 이름 호환(globe 렌더링 코드가 이 이름을 호출) */
   projOrtho(lonRad, latRad) { return this.projPerspective(lonRad, latRad); }
   /**
@@ -287,6 +338,7 @@ class Viewport {
   }
   /** (px,py) 화면점이 가리키는 지점을 고정한 채 스케일만 newScale로 바꿈(핀치/커서 줌). */
   zoomAtScreen(px, py, newScale) {
+    newScale = this.clampScaleForUserZoom(newScale);
     const w = this.canvas.width, h = this.canvas.height;
     const [wx, wy] = this.mercFromScreen(px, py);
     this.scale = newScale;
@@ -414,6 +466,9 @@ class Renderer {
   }
 
   render() {
+    // 축척만 바뀌고 syncAutoMode가 빠지는 경로(초기 fit, 터치 핀치 등)에서도
+    // 자동 지구본 전환이 되도록 매 프레임 동기화(비용은 비교·분기 수준).
+    if (this.vp.auto3D) this.vp.syncAutoMode();
     // 3D 지구본 모드는 별도 경로로 그린다(머케이터 파이프라인을 우회).
     if (this.vp.isGlobeView()) { this._renderGlobe(); return; }
     const ctx = this.ctx, vp = this.vp;
@@ -421,15 +476,11 @@ class Renderer {
     ctx.fillStyle = this.s52.color("DEPDW");
     ctx.fillRect(0, 0, w, h);
 
-    // 세계 대륙·국경 — globe 모드와 시각적으로 끊김 없는 전환을 위해 머케이터에서도 그린다.
-    // ENC 면 채움(패스 1)이 이 위를 덮으므로 ENC 영역에는 보이지 않고, 빈 영역(원양·해외)에만 노출됨.
-    this._drawMercatorWorldLand();
-    this._drawMercatorCountries();
-
     this._labelBoxes = [];
     /** 통항·조류 방향 화살표 디클러터: 버킷(28 px 격자) → 해당 버킷에 배치된 점들의 [x,y,...] */
     this._flowArrowGrid = new Map();
     this._pointSymbolGrid = new Map();
+    this._textDedupGrid = new Map();
     const denom = vp.scaleDenominator();
     // 동적 라벨/사운딩 글자 크기: 축척이 커질수록(=축소될수록) 글자를 줄여
     // 화면이 라벨로 덮이는 것을 막고, 확대할수록 글자를 키워 가독성을 높인다.
@@ -443,6 +494,10 @@ class Renderer {
     const winMinX = vp.cx - halfW, winMaxX = vp.cx + halfW;
     const winMinY = vp.cy - halfH, winMaxY = vp.cy + halfH;
 
+    // 세계 대륙·국경 — ENC가 없는 영역에 위치 컨텍스트를 주는 배경.
+    // 캐시된 폴리곤 bbox로 화면 밖은 통째 컬링하고, 매우 확대된 경우 스킵.
+    this._drawMercatorWorldOverlay(winMinX, winMaxX, winMinY, winMaxY);
+
     let drawn = 0, culled = 0;
     const resolved = [];
     for (const cell of this.cells.values()) {
@@ -454,6 +509,13 @@ class Renderer {
       // finer charts paint over coarser ones where they exist and coarser charts
       // back-fill everywhere else — full coverage, no holes.
       if (this.scaleDisplay && cscl && denom > cscl * this.scaleOutFactor) continue;
+      // ── 셀 단위 뷰포트 컬링 ──
+      // 셀 경계가 화면 밖이면 그 안의 모든 피처가 어차피 bbox 컬링될 것이므로 통째 스킵.
+      // 744개 셀 중 화면에 보이는 건 보통 수십 개 이하 — 큰 성능 이득.
+      const cmb = this._cellMercBbox(cell);
+      if (cmb && (cmb[1] < winMinX || cmb[0] > winMaxX || cmb[3] < winMinY || cmb[2] > winMaxY)) {
+        culled++; continue;
+      }
       for (const feat of cell.features) {
         if (!feat.geom && !feat.soundings) continue;
         if (this.hiddenClasses.has(feat.acronym)) continue; // per-object-class toggle
@@ -550,6 +612,22 @@ class Renderer {
           }
           this._soundings(r.feat);
         } else if (op.op === "TX" && this.showText) {
+          // (1) 다중 축척 셀의 동일 라벨 중복: 위치별 최상세 셀의 라벨만 그림
+          if (this.declutter && r.cellCscl !== Infinity) {
+            const a = r.feat._pg && r.feat._pg.anchor;
+            if (a) {
+              const best = this._bestCsclAt(a[0], a[1]);
+              if (best !== Infinity && r.cellCscl > best * CSCL_TOL) continue;
+            }
+          }
+          // (2) 같은 문자열이 화면상 가까운 위치(±TEXT_DEDUP_PX)에 이미 그려졌으면 스킵
+          if (this.declutter) {
+            const a = r.feat._pg && r.feat._pg.anchor;
+            if (a && op.text) {
+              const sx = this.vp.sx(a[0]), sy = this.vp.sy(a[1]);
+              if (spatialDedup(this._textDedupGrid, op.text, sx, sy, TEXT_DEDUP_PX, TEXT_DEDUP_PX)) continue;
+            }
+          }
           this._text(r.feat, op);
         }
       }
@@ -605,15 +683,10 @@ class Renderer {
     ctx.fillStyle = glow;
     ctx.beginPath(); ctx.arc(cx, cy, R * 1.18, 0, Math.PI * 2); ctx.fill();
 
-    // 구체 디스크 — 약간의 음영(왼쪽 위 밝게)
-    const ocean = ctx.createRadialGradient(
-      cx - R * 0.35, cy - R * 0.4, R * 0.1,
-      cx, cy, R
-    );
-    ocean.addColorStop(0, "#3a6fa8");
-    ocean.addColorStop(0.6, "#1f4d80");
-    ocean.addColorStop(1, "#0e2a4d");
-    ctx.fillStyle = ocean;
+    // 구체 디스크 — 단색. Canvas 방사 그라데이션(특히 편심)은 원과 맞지 않는 등색선으로
+    // 사선·띠가 보이기 쉬우며, 동심 그라데이션도 정지점에서 띠가 남을 수 있어 단색으로 둔다.
+    // 림의 푸른 톤은 위「대기 글로우」가 담당한다.
+    ctx.fillStyle = "#1f4d80";
     ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.fill();
 
     // 클리핑 — 이 시점부터 구체 안쪽만 그리기
@@ -707,23 +780,35 @@ class Renderer {
   _prepWorldLandMerc() {
     if (this._worldLandMerc) return;   // 이미 준비됨
     if (!this._worldLand) return;      // 아직 로딩 중 — 다음 프레임에 다시
+    this._worldLandMerc = this._geojsonToMerc(this._worldLand);
+  }
+
+  /**
+   * 정규화된 GeoJSON 폴리곤 리스트를 머케이터 좌표 + 폴리곤별 bbox로 변환.
+   * 결과 형태: [{ rings: [Float64Array(x,y,...), ...], bbox: [mnx,mxx,mny,mxy] }, ...]
+   * 매 프레임 vertex sx/sy로 bbox를 다시 계산할 필요가 없어 컬링 비용이 사라진다.
+   */
+  _geojsonToMerc(polys) {
     const out = [];
-    for (const rings of this._worldLand) {
+    for (const rings of polys) {
       const r2 = [];
+      let mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity;
       for (const ring of rings) {
         const n = ring.length;
         const flat = new Float64Array(n * 2);
         for (let i = 0; i < n; i++) {
           const lon = ring[i][0];
           const lat = Math.max(-85, Math.min(85, ring[i][1]));
-          flat[i * 2] = mercX(lon);
-          flat[i * 2 + 1] = mercY(lat);
+          const mx = mercX(lon), my = mercY(lat);
+          flat[i * 2] = mx; flat[i * 2 + 1] = my;
+          if (mx < mnx) mnx = mx; if (mx > mxx) mxx = mx;
+          if (my < mny) mny = my; if (my > mxy) mxy = my;
         }
         r2.push(flat);
       }
-      out.push(r2);
+      out.push({ rings: r2, bbox: [mnx, mxx, mny, mxy] });
     }
-    this._worldLandMerc = out;
+    return out;
   }
 
   /**
@@ -731,127 +816,263 @@ class Renderer {
    * 우선 ENC 영역 색이 위를 덮으므로 ENC가 있는 곳에는 보이지 않고, 빈 바다·해외에만 노출됨.
    * 매 프레임 사영은 캐시된 머케이터 좌표에 vp.sx/sy 선형 변환만 적용해 빠르다.
    */
-  /** 국가 경계도 머케이터 좌표로 캐시(처음 한 번). */
+  /** 국가 경계도 머케이터 좌표 + bbox로 캐시(처음 한 번). */
   _prepWorldCountriesMerc() {
     if (this._worldCountriesMerc) return;
     if (!this._worldCountries) return;
-    const out = [];
-    for (const rings of this._worldCountries) {
-      const r2 = [];
-      for (const ring of rings) {
-        const n = ring.length;
-        const flat = new Float64Array(n * 2);
-        for (let i = 0; i < n; i++) {
-          const lon = ring[i][0];
-          const lat = Math.max(-85, Math.min(85, ring[i][1]));
-          flat[i * 2] = mercX(lon);
-          flat[i * 2 + 1] = mercY(lat);
-        }
-        r2.push(flat);
-      }
-      out.push(r2);
-    }
-    this._worldCountriesMerc = out;
+    this._worldCountriesMerc = this._geojsonToMerc(this._worldCountries);
   }
 
-  /** 머케이터에서 국경 라인만 옅게(외곽 윤곽 강조용) */
-  _drawMercatorCountries() {
-    this._prepWorldCountriesMerc();
-    const polys = this._worldCountriesMerc;
-    if (!polys || !polys.length) return;
-    const ctx = this.ctx, vp = this.vp;
-    const w = this.canvas.width, h = this.canvas.height;
-    const margin = 40;
-    ctx.strokeStyle = "rgba(80,60,30,0.45)";
-    ctx.lineWidth = 0.5;
-    for (const rings of polys) {
-      const outer = rings[0];
-      if (!outer || outer.length < 4) continue;
-      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-      for (let i = 0; i < outer.length; i += 2) {
-        const x = vp.sx(outer[i]), y = vp.sy(outer[i + 1]);
-        if (x < minX) minX = x; if (x > maxX) maxX = x;
-        if (y < minY) minY = y; if (y > maxY) maxY = y;
-      }
-      if (maxX < -margin || minX > w + margin || maxY < -margin || minY > h + margin) continue;
-      ctx.beginPath();
-      for (const flat of rings) {
-        const n = flat.length;
-        if (n < 4) continue;
-        ctx.moveTo(vp.sx(flat[0]), vp.sy(flat[1]));
-        for (let i = 2; i < n; i += 2) {
-          ctx.lineTo(vp.sx(flat[i]), vp.sy(flat[i + 1]));
-        }
-        ctx.closePath();
-      }
-      ctx.stroke();
-    }
-  }
-
-  _drawMercatorWorldLand() {
+  /**
+   * 머케이터에서 세계 대륙(채움) + 국경(라인)을 그린다.
+   * - 폴리곤별 mercator bbox는 한 번만 계산해 캐시되어, 매 프레임 컬링은 단순 비교 4번.
+   * - 매우 축소·확대된 경우 화면 밖 폴리곤은 통째 스킵 → 한국 줌에서 아프리카·남미 등 무관 폴리곤 제거.
+   * - 줌이 너무 들어와 ENC가 화면을 채우면(scale > MAX_WORLD_SCALE) 세계 데이터 자체를 그리지 않음
+   *   — 어차피 ENC 면 채움이 덮어 보이지 않으므로 CPU 낭비.
+   */
+  _drawMercatorWorldOverlay(winMinX, winMaxX, winMinY, winMaxY) {
     this._ensureWorldLand();
+    if (this.vp.scale > 30000) return; // 항만 상세 줌 이상 — 세계 지도 의미 없음
     this._prepWorldLandMerc();
-    const polys = this._worldLandMerc;
-    if (!polys || !polys.length) return;
+    this._prepWorldCountriesMerc();
     const ctx = this.ctx, vp = this.vp;
-    // S-52 LANDA(육지 배경) 톤이 있으면 그것에 맞춰 일관성을 주고, 없으면 사막 톤.
-    const landFill = this.s52.color("LANDA") !== "#ff00ff"
-      ? this.s52.color("LANDA")
-      : "#dfd0a8";
-    ctx.fillStyle = landFill;
-    ctx.strokeStyle = "rgba(80,60,30,0.4)";
-    ctx.lineWidth = 0.6;
-    // 화면 밖 폴리곤 컬링용 화면 좌표 한계
-    const w = this.canvas.width, h = this.canvas.height;
-    const margin = 40;
-    for (const rings of polys) {
-      // 외곽 링(첫 링)으로 화면 밖이면 통째 스킵
-      const outer = rings[0];
-      if (!outer || outer.length < 4) continue;
-      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-      // 외곽 링 모든 정점을 한 번 사영해 bbox 계산(폴리곤 수가 적어 부담 적음)
-      for (let i = 0; i < outer.length; i += 2) {
-        const x = vp.sx(outer[i]), y = vp.sy(outer[i + 1]);
-        if (x < minX) minX = x; if (x > maxX) maxX = x;
-        if (y < minY) minY = y; if (y > maxY) maxY = y;
-      }
-      if (maxX < -margin || minX > w + margin || maxY < -margin || minY > h + margin) continue;
-
-      ctx.beginPath();
-      for (const flat of rings) {
-        const n = flat.length;
-        if (n < 4) continue;
-        ctx.moveTo(vp.sx(flat[0]), vp.sy(flat[1]));
-        for (let i = 2; i < n; i += 2) {
-          ctx.lineTo(vp.sx(flat[i]), vp.sy(flat[i + 1]));
+    // 1) 대륙 면
+    const lands = this._worldLandMerc;
+    if (lands && lands.length) {
+      const landFill = this.s52.color("LANDA") !== "#ff00ff"
+        ? this.s52.color("LANDA")
+        : "#dfd0a8";
+      ctx.fillStyle = landFill;
+      ctx.strokeStyle = "rgba(80,60,30,0.4)";
+      ctx.lineWidth = 0.6;
+      for (const item of lands) {
+        const bb = item.bbox;
+        if (bb[1] < winMinX || bb[0] > winMaxX || bb[3] < winMinY || bb[2] > winMaxY) continue;
+        ctx.beginPath();
+        for (const flat of item.rings) {
+          const n = flat.length;
+          if (n < 4) continue;
+          ctx.moveTo(vp.sx(flat[0]), vp.sy(flat[1]));
+          for (let i = 2; i < n; i += 2) ctx.lineTo(vp.sx(flat[i]), vp.sy(flat[i + 1]));
+          ctx.closePath();
         }
-        ctx.closePath();
+        ctx.fill("evenodd");
+        ctx.stroke();
       }
-      ctx.fill("evenodd");
-      ctx.stroke();
+    }
+    // 2) 국가 경계선
+    const countries = this._worldCountriesMerc;
+    if (countries && countries.length) {
+      ctx.strokeStyle = "rgba(80,60,30,0.45)";
+      ctx.lineWidth = 0.5;
+      for (const item of countries) {
+        const bb = item.bbox;
+        if (bb[1] < winMinX || bb[0] > winMaxX || bb[3] < winMinY || bb[2] > winMaxY) continue;
+        ctx.beginPath();
+        for (const flat of item.rings) {
+          const n = flat.length;
+          if (n < 4) continue;
+          ctx.moveTo(vp.sx(flat[0]), vp.sy(flat[1]));
+          for (let i = 2; i < n; i += 2) ctx.lineTo(vp.sx(flat[i]), vp.sy(flat[i + 1]));
+          ctx.closePath();
+        }
+        ctx.stroke();
+      }
     }
   }
 
   /**
-   * orthographic 투영으로 대륙 채우기. 지구 뒷면 정점은 림(R 반지름) 위로 사영해
-   * 경로가 끊기지 않게 한 뒤, 구체 디스크 클리핑에 맡겨 시각적으로 잘리게 한다.
+   * 폴리곤의 가시 정보를 한 번에 계산.
+   * 반환: { allFront, anyFront, vis[], proj[] }
+   *   vis[i]  = i번째 정점이 카메라 시선상 앞면(z > 1/D)인지
+   *   proj[i] = 앞면이면 화면 좌표 {x, y}, 뒷면이면 null
+   *
+   * 모든 정점이 앞면이면 정상적으로 채울 수 있고, 뒷면이 섞이면 수평선 안에서만 윤곽선을 그어
+   * 림으로의 잘못된 사영이 디스크 전체를 노란색으로 뒤덮는 문제를 피한다.
+   *
+   * (참고: 대륙 **면 채움**은 뷰 공간에서 z ≥ limbCos 반구로 클립한 뒤
+   * `_appendGlobeFillRing`으로 화면에 올린다. 국경 **선**은 `_pathGlobeRing`.)
    */
+  _projectRingPerspective(ring) {
+    const vp = this.vp;
+    const cLon = vp.cx, cLat = vp._globeLat;
+    const D = vp.globeCameraDistance();
+    const limbCos = 1 / D;
+    const cosCLat = Math.cos(cLat), sinCLat = Math.sin(cLat);
+    const n = ring.length;
+    const vis = new Uint8Array(n);
+    const proj = new Array(n);
+    let allFront = true, anyFront = false;
+    for (let i = 0; i < n; i++) {
+      const c = ring[i];
+      const lon = c[0] * Math.PI / 180;
+      const lat = c[1] * Math.PI / 180;
+      const cosLat = Math.cos(lat), sinLat = Math.sin(lat);
+      const dLon = lon - cLon;
+      const cosC = sinCLat * sinLat + cosCLat * cosLat * Math.cos(dLon);
+      if (cosC > limbCos) {
+        vis[i] = 1; anyFront = true;
+        proj[i] = vp.projPerspective(lon, lat);
+      } else {
+        allFront = false;
+        proj[i] = null;
+      }
+    }
+    return { allFront, anyFront, vis, proj };
+  }
+
+  /**
+   * globe 모드에서 **앞면** 정점의 연속 구간만 잇는 부분 경로를 그린다(국경 선 등).
+   * 뒷면은 null이라 끊긴다.
+   */
+  _pathGlobeRing(proj, vis) {
+    const ctx = this.ctx;
+    const n = vis.length;
+    let pen = false;
+    for (let i = 0; i < n; i++) {
+      if (vis[i]) {
+        const p = proj[i];
+        if (!pen) { ctx.moveTo(p.x, p.y); pen = true; }
+        else ctx.lineTo(p.x, p.y);
+      } else {
+        pen = false;
+      }
+    }
+  }
+
+  /**
+   * (lon,lat) 라디안 → `projPerspective`와 동일 회전의 단위구면 (x,y,z). z가 클수록 카메라 앞.
+   */
+  _lonLatToViewUnit(vp, lonRad, latRad) {
+    const cLon = vp.cx, cLat = vp._globeLat;
+    const cosLat = Math.cos(latRad), sinLat = Math.sin(latRad);
+    const cosCLat = Math.cos(cLat), sinCLat = Math.sin(cLat);
+    const dLon = lonRad - cLon;
+    const cosDLon = Math.cos(dLon), sinDLon = Math.sin(dLon);
+    return {
+      x: cosLat * sinDLon,
+      y: cosCLat * sinLat - sinCLat * cosLat * cosDLon,
+      z: sinCLat * sinLat + cosCLat * cosLat * cosDLon,
+    };
+  }
+
+  /** 뷰 단위구면 점 → globe 화면 좌표(원근; 경계는 림으로). */
+  _viewUnitToGlobeScreen(vp, v) {
+    const f = vp.globeFocalLength();
+    const D = vp.globeCameraDistance();
+    const cx = vp.canvas.width / 2, cy = vp.canvas.height / 2;
+    const { x: xv, y: yv, z: zv } = v;
+    if (zv > 1 / D + 1e-9) {
+      const denom = D - zv;
+      return { x: cx + (xv * f) / denom, y: cy - (yv * f) / denom };
+    }
+    const mag = Math.hypot(xv, yv) || 1e-9;
+    const r = vp.globeRadius();
+    return { x: cx + (xv / mag) * r, y: cy - (yv / mag) * r };
+  }
+
+  /**
+   * 단위구면 다각형(링)을 z ≥ limbCos 반공간으로 Sutherland–Hodgman 클립.
+   * 뒷면 꼭짓점을 림으로 직선 연결하면 경로가 자기교차해 evenodd fill이 바다색으로 번지므로,
+   * 면 채움 전용으로 사용한다.
+   */
+  _clipViewRingToGlobeFront(vp, verts) {
+    const limbCos = 1 / vp.globeCameraDistance();
+    const EPS = 1e-7;
+    const inside = (p) => p.z >= limbCos - EPS;
+    const inter = (A, B) => {
+      const dz = B.z - A.z;
+      if (Math.abs(dz) < 1e-11) return null;
+      const t = (limbCos - A.z) / dz;
+      if (t < -1e-7 || t > 1 + 1e-7) return null;
+      const x = A.x + t * (B.x - A.x);
+      const y = A.y + t * (B.y - A.y);
+      const z = A.z + t * (B.z - A.z);
+      const L = Math.hypot(x, y, z) || 1e-9;
+      return { x: x / L, y: y / L, z: z / L };
+    };
+    const n = verts.length;
+    if (n < 2) return null;
+    const out = [];
+    let S = verts[n - 1];
+    for (let i = 0; i < n; i++) {
+      const E = verts[i];
+      const Sin = inside(S), Ein = inside(E);
+      if (Ein) {
+        if (!Sin) {
+          const I = inter(S, E);
+          if (I) out.push(I);
+        }
+        out.push(E);
+      } else if (Sin) {
+        const I = inter(S, E);
+        if (I) out.push(I);
+      }
+      S = E;
+    }
+    if (out.length < 3) return null;
+    return out;
+  }
+
+  /** GeoJSON 링 [lon,lat]° → 닫힘 중복 제거 후 뷰 단위구면 꼭짓점 배열. */
+  _ringLonLatToViewVerts(vp, ring) {
+    const n0 = ring.length;
+    let end = n0;
+    if (n0 >= 2) {
+      const a = ring[0], b = ring[n0 - 1];
+      if (Math.abs(a[0] - b[0]) < 1e-8 && Math.abs(a[1] - b[1]) < 1e-8) end = n0 - 1;
+    }
+    const verts = [];
+    for (let i = 0; i < end; i++) {
+      const c = ring[i];
+      verts.push(this._lonLatToViewUnit(vp, (c[0] * Math.PI) / 180, (c[1] * Math.PI) / 180));
+    }
+    if (verts.length < 2) return null;
+    return verts;
+  }
+
+  /**
+   * globe **면 채움**: 반구 클립 후 화면 폴리곤(자기교차 없음).
+   */
+  _appendGlobeFillRing(ctx, ring) {
+    const vp = this.vp;
+    const raw = this._ringLonLatToViewVerts(vp, ring);
+    if (!raw) return;
+    const clipped = this._clipViewRingToGlobeFront(vp, raw);
+    if (!clipped) return;
+    const p0 = this._viewUnitToGlobeScreen(vp, clipped[0]);
+    ctx.moveTo(p0.x, p0.y);
+    for (let i = 1; i < clipped.length; i++) {
+      const p = this._viewUnitToGlobeScreen(vp, clipped[i]);
+      ctx.lineTo(p.x, p.y);
+    }
+    ctx.closePath();
+  }
+
   _drawGlobeCountries() {
     const polys = this._worldCountries;
     if (!polys || !polys.length) return;
-    const ctx = this.ctx, vp = this.vp;
+    const ctx = this.ctx;
     ctx.strokeStyle = "rgba(80,60,30,0.55)";
     ctx.lineWidth = 0.6;
     for (const rings of polys) {
+      // 외곽 링만 가시성 빠르게 확인 — 모두 뒷면이면 통째 스킵(앞면 폴리곤만 그림)
+      let anyFront = false;
+      const outer = rings[0];
+      const D = this.vp.globeCameraDistance();
+      const limbCos = 1 / D;
+      const cosCLat = Math.cos(this.vp._globeLat), sinCLat = Math.sin(this.vp._globeLat);
+      for (const c of outer) {
+        const lat = c[1] * Math.PI / 180;
+        const cosLat = Math.cos(lat), sinLat = Math.sin(lat);
+        const cosC = sinCLat * sinLat + cosCLat * cosLat * Math.cos(c[0] * Math.PI / 180 - this.vp.cx);
+        if (cosC > limbCos) { anyFront = true; break; }
+      }
+      if (!anyFront) continue;
       ctx.beginPath();
       for (const ring of rings) {
-        for (let i = 0; i < ring.length; i++) {
-          const c = ring[i];
-          const p = vp.projPerspective(c[0] * Math.PI / 180, c[1] * Math.PI / 180);
-          if (i === 0) ctx.moveTo(p.x, p.y);
-          else ctx.lineTo(p.x, p.y);
-        }
-        ctx.closePath();
+        const r = this._projectRingPerspective(ring);
+        this._pathGlobeRing(r.proj, r.vis);
       }
       ctx.stroke();
     }
@@ -860,41 +1081,131 @@ class Renderer {
   _drawGlobeLand() {
     const polys = this._worldLand;
     if (!polys || !polys.length) return;
-    const ctx = this.ctx, vp = this.vp;
+    const ctx = this.ctx;
     const landFill = this.s52.color("LANDA") !== "#ff00ff"
       ? this.s52.color("LANDA")
       : "#dfd0a8";
-    ctx.fillStyle = landFill;            // 머케이터 모드와 동일 톤
+    ctx.fillStyle = landFill;
     ctx.strokeStyle = "rgba(80,60,30,0.5)";
     ctx.lineWidth = 0.6;
     for (const rings of polys) {
+      const r0 = this._projectRingPerspective(rings[0]);
+      if (!r0.anyFront) continue; // 통째 뒷면 — 스킵
       ctx.beginPath();
       for (const ring of rings) {
-        for (let i = 0; i < ring.length; i++) {
-          const c = ring[i];
-          const p = vp.projPerspective(c[0] * Math.PI / 180, c[1] * Math.PI / 180);
-          if (i === 0) ctx.moveTo(p.x, p.y);
-          else ctx.lineTo(p.x, p.y);
-        }
-        ctx.closePath();
+        this._appendGlobeFillRing(ctx, ring);
       }
       ctx.fill("evenodd");
+      // 윤곽은 앞면 구간만 — 연속 링 전체를 stroke 하면 림 근처에 뒷면 꼭짓점 연결 잡선이 난다.
+      ctx.beginPath();
+      this._pathGlobeRing(r0.proj, r0.vis);
+      for (let i = 1; i < rings.length; i++) {
+        const r = this._projectRingPerspective(rings[i]);
+        this._pathGlobeRing(r.proj, r.vis);
+      }
       ctx.stroke();
     }
   }
 
-  /** 결정론적 별 점들(중심·크기 고정으로 매 프레임 같은 패턴). */
+  /**
+   * 결정론적 별 점들 — 매 프레임 동일한 패턴(LCG 시드 고정).
+   * globe:
+   *  (0) **심우주** — 화면 전체에 작은 별(지구 디스크 안만 비움). 회전과 무관한 먼 배경.
+   *  (1) 천구 고리 — `globeCelestialToSkyRing`, 지구본 회전에 따라 방위 이동.
+   *  (2) 밝은 별 — 소수, 글로우·스파이크(천구 고리 위치).
+   * mercator: (1)(2)와 동일하되 전 화면 랜덤.
+   */
   _drawStars() {
     const ctx = this.ctx;
     const w = this.canvas.width, h = this.canvas.height;
-    // 단순 LCG로 결정론적 분포
+    const vp = this.vp;
+    const globe = vp.isGlobeView();
+    const cx = w / 2, cy = h / 2;
+    const Rglobe = globe ? vp.globeRadius() : 0;
+    const R2cut = Rglobe > 0 ? (Rglobe * Rglobe) * 0.97 : -1;
+    const insideGlobe = (x, y) => {
+      if (R2cut < 0) return false;
+      const dx = x - cx, dy = y - cy;
+      return dx * dx + dy * dy < R2cut;
+    };
+    // 결정론적 LCG
     let s = 1234567;
     const rand = () => (s = (s * 1664525 + 1013904223) >>> 0) / 0xffffffff;
-    ctx.fillStyle = "rgba(255,255,255,0.7)";
-    const n = Math.floor((w * h) / 6000);
-    for (let i = 0; i < n; i++) {
-      const x = rand() * w, y = rand() * h, r = rand() * 1.1 + 0.2;
-      ctx.fillRect(x, y, r, r);
+    /** 천구 + 하늘 고리(회전 동기) */
+    const starXYRing = () => {
+      if (!globe) return { x: rand() * w, y: rand() * h };
+      const lon = rand() * Math.PI * 2;
+      const lat = Math.asin(Math.max(-1, Math.min(1, 2 * rand() - 1)));
+      return vp.globeCelestialToSkyRing(lon, lat, rand());
+    };
+
+    // (0) 심우주 — 전 화면 밀도(지구 뒤만 비움), 우주 느낌
+    if (globe) {
+      const deep = Math.floor((w * h) / 900);
+      for (let i = 0; i < deep; i++) {
+        let x, y;
+        for (let k = 0; k < 16; k++) {
+          x = rand() * w;
+          y = rand() * h;
+          if (!insideGlobe(x, y)) break;
+        }
+        if (insideGlobe(x, y)) continue;
+        const a = 0.12 + rand() * 0.42;
+        const pr = 0.25 + rand() * 0.55;
+        ctx.fillStyle = `rgba(210,218,235,${a.toFixed(3)})`;
+        ctx.beginPath();
+        ctx.arc(x, y, pr, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    // (1) 배경 별 — 다수, 작고 옅음(천구 고리 / 평면 랜덤)
+    const dim = Math.floor((w * h) / (globe ? 3800 : 2200));
+    for (let i = 0; i < dim; i++) {
+      let x, y;
+      for (let k = 0; k < 10; k++) {
+        const p = starXYRing();
+        if (p) { x = p.x; y = p.y; break; }
+      }
+      if (x === undefined) continue;
+      const a = 0.25 + rand() * 0.5;
+      const r = 0.35 + rand() * 0.8;
+      ctx.fillStyle = `rgba(220,225,240,${a.toFixed(3)})`;
+      ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+    }
+
+    // (2) 밝은 별 — 소수, 글로우와 ✦ 스파이크
+    const bright = Math.max(10, Math.floor((w * h) / (globe ? 45000 : 60000)));
+    for (let i = 0; i < bright; i++) {
+      let x, y;
+      for (let k = 0; k < 10; k++) {
+        const p = starXYRing();
+        if (p) { x = p.x; y = p.y; break; }
+      }
+      if (x === undefined) continue;
+      const sz = 1.2 + rand() * 1.6;
+      const tint = rand();
+      const r = tint < 0.5 ? 255 : (tint < 0.8 ? 220 : 200);
+      const g = tint < 0.5 ? 250 : (tint < 0.8 ? 230 : 215);
+      const b = tint < 0.5 ? 255 : (tint < 0.8 ? 255 : 220);
+      // 헤일로
+      const halo = ctx.createRadialGradient(x, y, 0, x, y, sz * 4);
+      halo.addColorStop(0, `rgba(${r},${g},${b},0.85)`);
+      halo.addColorStop(0.4, `rgba(${r},${g},${b},0.25)`);
+      halo.addColorStop(1, `rgba(${r},${g},${b},0)`);
+      ctx.fillStyle = halo;
+      ctx.beginPath(); ctx.arc(x, y, sz * 4, 0, Math.PI * 2); ctx.fill();
+      // 코어
+      ctx.fillStyle = `rgba(${r},${g},${b},1)`;
+      ctx.beginPath(); ctx.arc(x, y, sz, 0, Math.PI * 2); ctx.fill();
+      // 회절 스파이크(가로·세로 가는 선)
+      ctx.strokeStyle = `rgba(${r},${g},${b},0.55)`;
+      ctx.lineWidth = 0.6;
+      const spike = sz * 5;
+      ctx.beginPath();
+      ctx.moveTo(x - spike, y); ctx.lineTo(x + spike, y);
+      ctx.moveTo(x, y - spike); ctx.lineTo(x, y + spike);
+      ctx.stroke();
     }
   }
 
@@ -948,7 +1259,6 @@ class Renderer {
       const b = cell.bounds;
       if (!b || b.maxX === undefined) continue;
       const visible = cell.visible && cell.loaded;
-      ctx.fillStyle = visible ? "rgba(255,200,60,0.32)" : "rgba(255,255,255,0.06)";
       ctx.strokeStyle = visible ? "rgba(255,220,90,0.95)" : "rgba(255,255,255,0.35)";
       // 셀 외곽을 16분할해 경계가 곡선으로 보이도록
       const pts = [];
@@ -963,15 +1273,18 @@ class Renderer {
       for (let i = 1; i < N; i++) pts.push([b.minX, b.maxY - (b.maxY - b.minY) * i / N]);
 
       ctx.beginPath();
-      let started = false, anyVisible = false;
+      let started = false, anyVisible = false, allVisible = true;
       for (const [lonDeg, latDeg] of pts) {
         const p = vp.projOrtho(lonDeg * Math.PI / 180, latDeg * Math.PI / 180);
-        if (!p.visible) { started = false; continue; }
+        if (!p.visible) { started = false; allVisible = false; continue; }
         anyVisible = true;
         if (!started) { ctx.moveTo(p.x, p.y); started = true; }
         else ctx.lineTo(p.x, p.y);
       }
-      if (anyVisible) { ctx.closePath(); ctx.fill(); ctx.stroke(); }
+      if (!anyVisible) continue;
+      // 전체가 앞면일 때만 closePath() — 부분 가시 셀은 마지막 점→첫 점 직선 폐쇄가 사선 잔상을 만들기 때문.
+      if (allVisible) ctx.closePath();
+      ctx.stroke();
     }
   }
 
@@ -1160,7 +1473,7 @@ class Renderer {
     const ww = Math.abs(x1[0] - x0[0]), hh = Math.abs(x1[1] - x0[1]);
     if (ww < 3 && hh < 3) return;
     if (x + ww < 0 || y + hh < 0 || x > this.canvas.width || y > this.canvas.height) return;
-    // 포커스 셀만 테두리 표시; 나머지 셀은 테두리 없이 배경 채움+라벨만
+    // 포커스 셀: 강조 테두리. 그 외 표시 중 셀: 밴드색 얇은 윤곽(면 채움 없음)
     if (focused) {
       ctx.strokeStyle = "rgba(255,255,255,0.95)";
       ctx.lineWidth = 4;
@@ -1169,8 +1482,12 @@ class Renderer {
       ctx.strokeStyle = col;
       ctx.lineWidth = 2;
       ctx.strokeRect(x, y, ww, hh);
+    } else if (on) {
+      ctx.strokeStyle = col.replace(/[\d.]+\)$/, "0.55)");
+      ctx.lineWidth = 1;
+      ctx.setLineDash([]);
+      ctx.strokeRect(x, y, ww, hh);
     }
-    if (on) { ctx.fillStyle = col.replace(/[\d.]+\)$/, "0.06)"); ctx.fillRect(x, y, ww, hh); }
     if (ww > 36 && hh > 14) {
       const label = g.name.replace(/\.000$/i, "");
       ctx.fillStyle = col;
@@ -1243,6 +1560,20 @@ class Renderer {
   }
 
   /**
+   * 셀 경계 박스를 머케이터 좌표로 1회만 계산해 캐시(`[mxMin, mxMax, myMin, myMax]`).
+   * 셀 컬링 + CSCL 인덱싱에 공통으로 쓰는 핫패스 함수라 호출이 잦다 — 캐시 필수.
+   */
+  _cellMercBbox(cell) {
+    if (cell._mercBbox !== undefined) return cell._mercBbox;
+    const b = cell.bounds;
+    if (!b || b.maxX === undefined) return cell._mercBbox = null;
+    return cell._mercBbox = [
+      mercX(b.minX), mercX(b.maxX),
+      mercY(b.minY), mercY(b.maxY),
+    ];
+  }
+
+  /**
    * 화면 안에 들어오는 셀들의 (Mercator) 경계와 CSCL을 모아, 임의 위치 (mx, my)
    * 에서의 **가장 상세한(=가장 작은) CSCL** 을 즉시 돌려주는 클로저를 만든다.
    * 더 상세한 셀이 같은 위치를 덮으면 개략 셀의 점 심볼·사운딩을 생략하는
@@ -1256,11 +1587,9 @@ class Renderer {
       const cscl = b && b.cscl;
       if (!cscl || b.maxX === undefined) continue;
       if (this.scaleDisplay && denom > cscl * this.scaleOutFactor) continue;
-      // lon/lat → mercator (b.minY/maxY는 도 단위)
-      const mxMin = b.minX * Math.PI / 180;
-      const mxMax = b.maxX * Math.PI / 180;
-      const myMin = Math.log(Math.tan(Math.PI / 4 + b.minY * Math.PI / 360));
-      const myMax = Math.log(Math.tan(Math.PI / 4 + b.maxY * Math.PI / 360));
+      const cmb = this._cellMercBbox(cell);
+      if (!cmb) continue;
+      const mxMin = cmb[0], mxMax = cmb[1], myMin = cmb[2], myMax = cmb[3];
       if (mxMax < winMinX || mxMin > winMaxX || myMax < winMinY || myMin > winMaxY) continue;
       cells.push({ cscl, mxMin, mxMax, myMin, myMax });
     }

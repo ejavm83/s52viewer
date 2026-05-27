@@ -2,7 +2,7 @@ import { DDF } from "./iso8211.js";
 import { S57 } from "./s57.js";
 import { S52 } from "./s52.js?v=3";
 import { loadCatalog } from "./catalog.js";
-import { Renderer } from "./render.js?v=34";
+import { Renderer } from "./render.js?v=42";
 
 const ATLAS_BY_TABLE = {
   DAY_BRIGHT: "assets/rastersymbols-day.png",
@@ -215,6 +215,7 @@ async function init() {
   if (isMobileLayout()) state.renderer.vp.fit(MOBILE_INITIAL_BOUNDS);
   else state.renderer.vp.fit(state.globalBounds);
   clampVpScaleForEncOverview(idx);
+  state.renderer.vp.applyZoomOutLimitAfterFit();
   state.fitted = true;
   resize();
 
@@ -408,6 +409,7 @@ async function setCellVisible(name, on, refit) {
   syncRow(name);
   if (on && refit && cell.chartBounds) {
     state.renderer.vp.fit(cell.chartBounds);
+    state.renderer.vp.applyZoomOutLimitAfterFit();
   }
   draw();
   const vis = [...state.renderer.cells.values()].filter((c) => c.visible).length;
@@ -670,6 +672,7 @@ document.getElementById("hideAll").addEventListener("click", () => {
 document.getElementById("fitAll").addEventListener("click", () => {
   state.renderer.vp.fit(state.globalBounds);
   clampVpScaleForEncOverview(state.renderer.grid);
+  state.renderer.vp.applyZoomOutLimitAfterFit();
   draw();
 });
 
@@ -741,6 +744,7 @@ function focusViewportToCellName(name) {
     maxX: g.maxX,
     maxY: g.maxY,
   });
+  state.renderer.vp.applyZoomOutLimitAfterFit();
   state.fitted = true;
   draw();
   syncCellListFocus();
@@ -1012,6 +1016,7 @@ async function openFiles(files) {
   const u = unionBounds(allBounds);
   if (u) {
     state.renderer.vp.fit(u);
+    state.renderer.vp.applyZoomOutLimitAfterFit();
     state.fitted = true;
   }
   if (lastOkName) state.renderer.gridFocusName = lastOkName;
@@ -1080,12 +1085,105 @@ document.getElementById("sidebarVisible").addEventListener("change", (e) => {
 });
 
 // ---- pan & zoom + click-to-toggle a cell on the grid ----
-const WHEEL_ZOOM_FACTOR = 1.35;
+/**
+ * 마우스 휠 한 노치당 확대/축소 배율.
+ * 구글 어스 류와 유사한 “큼직한” 줌 — 한 번 굴리면 약 2배.
+ * `deltaY`의 부호(±)만 사용해 노치당 일정한 스케일 변화를 보장(마우스/트랙패드별 deltaY 크기 차이 무시).
+ */
+const WHEEL_ZOOM_FACTOR = 2.0;
 const ZOOM_KEY_FACTOR = 1.15;
 const PAN_STEP_PX = 64;
 
+// ---- 지구본 드래그 관성(구글 어스처럼 손을 떼면 잠시 미끄러짐) ----
+let _globeSpinRaf = 0;
+let _globeSpinVelX = 0;
+let _globeSpinVelY = 0;
+/** 드래그 중 추정 속도(px/s), 손을 뗄 때 관성 초기값으로 사용 */
+let _globeDragVelX = 0;
+let _globeDragVelY = 0;
+let _globeDragVelT = 0;
+
+function stopGlobeSpin() {
+  if (_globeSpinRaf) {
+    cancelAnimationFrame(_globeSpinRaf);
+    _globeSpinRaf = 0;
+  }
+  _globeSpinVelX = _globeSpinVelY = 0;
+}
+
+function resetGlobeDragVelocity() {
+  _globeDragVelX = _globeDragVelY = 0;
+  _globeDragVelT = performance.now();
+}
+
+/**
+ * 최근 포인터 이동으로 지구본 관성용 속도(px/s)를 갱신.
+ * @param {number} dx
+ * @param {number} dy
+ */
+function recordGlobeDragVelocity(dx, dy) {
+  const now = performance.now();
+  const dt = Math.max(1, Math.min(72, now - _globeDragVelT));
+  _globeDragVelT = now;
+  const ix = (dx / dt) * 1000;
+  const iy = (dy / dt) * 1000;
+  const a = 0.38;
+  _globeDragVelX = _globeDragVelX * (1 - a) + ix * a;
+  _globeDragVelY = _globeDragVelY * (1 - a) + iy * a;
+}
+
+/** 손을 뗀 뒤 지구본이 잠시 관성으로 도는 애니메이션 */
+function startGlobeSpinFromDragVelocity() {
+  const vp = state.renderer?.vp;
+  if (!vp?.isGlobeView()) return;
+  const sp = Math.hypot(_globeDragVelX, _globeDragVelY);
+  const MIN_START = 28;
+  if (sp < MIN_START) return;
+  const MAX = 5200;
+  const nx = _globeDragVelX / sp;
+  const ny = _globeDragVelY / sp;
+  const mag = Math.min(sp, MAX);
+  if (_globeSpinRaf) {
+    cancelAnimationFrame(_globeSpinRaf);
+    _globeSpinRaf = 0;
+  }
+  _globeSpinVelX = nx * mag;
+  _globeSpinVelY = ny * mag;
+
+  const TAU_MS = 2100;
+  const STOP_BELOW = 14;
+  let lastT = performance.now();
+  const step = (now) => {
+    const vp2 = state.renderer?.vp;
+    if (!vp2?.isGlobeView()) {
+      _globeSpinRaf = 0;
+      return;
+    }
+    const dt = Math.min(48, now - lastT);
+    lastT = now;
+    const damp = Math.exp(-dt / TAU_MS);
+    const ddx = _globeSpinVelX * (dt / 1000);
+    const ddy = _globeSpinVelY * (dt / 1000);
+    _globeSpinVelX *= damp;
+    _globeSpinVelY *= damp;
+    vp2.rotateGlobeByPixels(ddx, ddy);
+    draw();
+    if (isMobileLayout()) scheduleMobileViewportSync();
+    const sp2 = Math.hypot(_globeSpinVelX, _globeSpinVelY);
+    if (sp2 < STOP_BELOW) {
+      _globeSpinRaf = 0;
+      draw();
+      return;
+    }
+    _globeSpinRaf = requestAnimationFrame(step);
+  };
+  _globeSpinRaf = requestAnimationFrame(step);
+}
+
 let dragging = false, moved = false, startX = 0, startY = 0, lastX = 0, lastY = 0;
 canvas.addEventListener("mousedown", (e) => {
+  stopGlobeSpin();
+  resetGlobeDragVelocity();
   dragging = true; moved = false;
   startX = lastX = e.clientX; startY = lastY = e.clientY;
   state.renderer.beginPan();
@@ -1093,6 +1191,8 @@ canvas.addEventListener("mousedown", (e) => {
 window.addEventListener("mouseup", () => {
   if (!dragging) return;
   dragging = false;
+  const vp = state.renderer?.vp;
+  if (vp?.isGlobeView() && moved) startGlobeSpinFromDragVelocity();
   if (moved) {
     draw(); // final full-detail render at the settled position
     if (isMobileLayout()) scheduleMobileViewportSync();
@@ -1105,6 +1205,7 @@ window.addEventListener("mousemove", (e) => {
   const dx = e.clientX - lastX, dy = e.clientY - lastY;
   lastX = e.clientX; lastY = e.clientY;
   if (vp.isGlobeView()) {
+    recordGlobeDragVelocity(dx, dy);
     // 지구본 회전 — 픽셀 변위만큼 중심 경·위도 이동(픽셀당 1/R 라디안)
     vp.rotateGlobeByPixels(dx, dy);
     draw();
@@ -1119,16 +1220,17 @@ let _zoomAnimTarget = null;
 let _zoomAnimRaf = 0;
 function smoothZoomTo(targetScale, focusX, focusY) {
   const vp = state.renderer.vp;
+  targetScale = vp.clampScaleForUserZoom(targetScale);
   _zoomAnimTarget = targetScale;
   if (_zoomAnimRaf) return; // 이미 진행 중 — 목표만 갱신, 같은 루프에서 따라감
   let lastT = performance.now();
   const step = (now) => {
     const dt = Math.min(64, now - lastT); lastT = now;
     const cur = vp.scale;
-    const tgt = _zoomAnimTarget;
+    const tgt = vp.clampScaleForUserZoom(_zoomAnimTarget);
     // 지수 보간: 한 프레임당 (tgt/cur)^k. k = 1 - exp(-dt/τ). τ ≈ 90ms로 부드럽게 따라감.
     const k = 1 - Math.exp(-dt / 90);
-    const next = cur * Math.pow(tgt / cur, k);
+    const next = vp.clampScaleForUserZoom(cur * Math.pow(tgt / cur, k));
     // 마우스 포커스 픽셀이 가리키는 지점을 유지하며 확대(머케이터에서만)
     if (!vp.isGlobeView()) vp.zoomAtScreen(focusX, focusY, next);
     else vp.scale = next;
@@ -1138,7 +1240,7 @@ function smoothZoomTo(targetScale, focusX, focusY) {
     if (Math.abs(Math.log(vp.scale / tgt)) > 0.005) {
       _zoomAnimRaf = requestAnimationFrame(step);
     } else {
-      vp.scale = tgt;
+      vp.scale = vp.clampScaleForUserZoom(tgt);
       _zoomAnimRaf = 0; _zoomAnimTarget = null;
       draw();
     }
@@ -1211,7 +1313,8 @@ window.addEventListener("keydown", (e) => {
       const bm = loadBookmarks();
       const slot = bm[digit];
       if (slot) {
-        vp.cx = slot.cx; vp.cy = slot.cy; vp.scale = slot.scale;
+        vp.cx = slot.cx; vp.cy = slot.cy;
+        vp.scale = vp.clampScaleForUserZoom(slot.scale);
         setStatus(`즐겨찾기 ${digit}번 복원`);
         draw();
         if (isMobileLayout()) scheduleMobileViewportSync();
@@ -1278,6 +1381,8 @@ function touchDistance(a, b) {
 
 canvas.addEventListener("touchstart", (e) => {
   if (e.touches.length === 2) {
+    stopGlobeSpin();
+    resetGlobeDragVelocity();
     touchLast = null;
     const t0 = e.touches[0], t1 = e.touches[1];
     const rect = canvas.getBoundingClientRect();
@@ -1293,6 +1398,8 @@ canvas.addEventListener("touchstart", (e) => {
   }
   pinch = null;
   if (e.touches.length !== 1) { touchLast = null; return; }
+  stopGlobeSpin();
+  resetGlobeDragVelocity();
   touchLast = { x: e.touches[0].clientX, y: e.touches[0].clientY };
   dragging = true;
   moved = false;
@@ -1305,10 +1412,14 @@ canvas.addEventListener("touchmove", (e) => {
     const rect = canvas.getBoundingClientRect();
     const d = touchDistance(t0, t1);
     const factor = d / pinch.dist;
-    const newScale = Math.min(8e7, Math.max(200, pinch.scale * factor));
+    const lo = vp.zoomOutMinScale != null ? vp.zoomOutMinScale : 200;
+    const newScale = vp.clampScaleForUserZoom(Math.min(8e7, Math.max(lo, pinch.scale * factor)));
     const cx = ((t0.clientX + t1.clientX) / 2) - rect.left;
     const cy = ((t0.clientY + t1.clientY) / 2) - rect.top;
-    state.renderer.vp.zoomAtScreen(cx, cy, newScale);
+    const vp = state.renderer.vp;
+    // 지구본 모드에서는 머케이터 기준 zoomAtScreen이 중심·회전을 망가뜨리므로 축척만 조절
+    if (vp.isGlobeView()) vp.scale = newScale;
+    else vp.zoomAtScreen(cx, cy, newScale);
     if (Math.abs(factor - 1) > 0.02) moved = true;
     draw();
     return;
@@ -1319,8 +1430,13 @@ canvas.addEventListener("touchmove", (e) => {
   const dx = t.clientX - touchLast.x, dy = t.clientY - touchLast.y;
   if (Math.abs(dx) + Math.abs(dy) > 2) moved = true;
   const vp = state.renderer.vp;
-  vp.cx -= dx / vp.scale;
-  vp.cy += dy / vp.scale;
+  if (vp.isGlobeView()) {
+    recordGlobeDragVelocity(dx, dy);
+    vp.rotateGlobeByPixels(dx, dy);
+  } else {
+    vp.cx -= dx / vp.scale;
+    vp.cy += dy / vp.scale;
+  }
   touchLast = { x: t.clientX, y: t.clientY };
   draw();
 }, { passive: false });
@@ -1331,9 +1447,11 @@ canvas.addEventListener("touchend", (e) => {
     const t = e.touches[0];
     touchLast = { x: t.clientX, y: t.clientY };
     dragging = true;
+    resetGlobeDragVelocity();
   } else {
     touchLast = null;
     dragging = false;
+    if (state.renderer?.vp?.isGlobeView() && moved) startGlobeSpinFromDragVelocity();
     if (isMobileLayout() && moved) scheduleMobileViewportSync();
   }
 });
@@ -1341,6 +1459,8 @@ canvas.addEventListener("touchcancel", () => {
   touchLast = null;
   pinch = null;
   dragging = false;
+  stopGlobeSpin();
+  resetGlobeDragVelocity();
   if (isMobileLayout() && moved) scheduleMobileViewportSync();
 });
 function pickCell(mx, my) {

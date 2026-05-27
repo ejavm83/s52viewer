@@ -2,7 +2,7 @@ import { DDF } from "./iso8211.js";
 import { S57 } from "./s57.js";
 import { S52 } from "./s52.js?v=3";
 import { loadCatalog } from "./catalog.js";
-import { Renderer } from "./render.js?v=47";
+import { Renderer } from "./render.js?v=48";
 
 const ATLAS_BY_TABLE = {
   DAY_BRIGHT: "assets/rastersymbols-day.png",
@@ -1408,6 +1408,7 @@ canvas.addEventListener("touchstart", (e) => {
 }, { passive: true });
 canvas.addEventListener("touchmove", (e) => {
   if (!state.renderer) return;
+  const vp = state.renderer.vp;
   if (e.touches.length === 2 && pinch) {
     e.preventDefault();
     const t0 = e.touches[0], t1 = e.touches[1];
@@ -1418,10 +1419,10 @@ canvas.addEventListener("touchmove", (e) => {
     const newScale = vp.clampScaleForUserZoom(Math.min(8e7, Math.max(lo, pinch.scale * factor)));
     const cx = ((t0.clientX + t1.clientX) / 2) - rect.left;
     const cy = ((t0.clientY + t1.clientY) / 2) - rect.top;
-    const vp = state.renderer.vp;
     // 지구본 모드에서는 머케이터 기준 zoomAtScreen이 중심·회전을 망가뜨리므로 축척만 조절
     if (vp.isGlobeView()) vp.scale = newScale;
     else vp.zoomAtScreen(cx, cy, newScale);
+    vp.syncAutoMode();
     if (Math.abs(factor - 1) > 0.02) moved = true;
     draw();
     return;
@@ -1431,7 +1432,6 @@ canvas.addEventListener("touchmove", (e) => {
   const t = e.touches[0];
   const dx = t.clientX - touchLast.x, dy = t.clientY - touchLast.y;
   if (Math.abs(dx) + Math.abs(dy) > 2) moved = true;
-  const vp = state.renderer.vp;
   if (vp.isGlobeView()) {
     recordGlobeDragVelocity(dx, dy);
     vp.rotateGlobeByPixels(dx, dy);

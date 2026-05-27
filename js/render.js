@@ -612,15 +612,10 @@ class Renderer {
           }
           this._soundings(r.feat);
         } else if (op.op === "TX" && this.showText) {
-          // (1) 다중 축척 셀의 동일 라벨 중복: 위치별 최상세 셀의 라벨만 그림
-          if (this.declutter && r.cellCscl !== Infinity) {
-            const a = r.feat._pg && r.feat._pg.anchor;
-            if (a) {
-              const best = this._bestCsclAt(a[0], a[1]);
-              if (best !== Infinity && r.cellCscl > best * CSCL_TOL) continue;
-            }
-          }
-          // (2) 같은 문자열이 화면상 가까운 위치(±TEXT_DEDUP_PX)에 이미 그려졌으면 스킵
+          // 텍스트는 셀 우선순위 필터(CSCL)를 적용하지 않는다 — 셀마다 서로 다른 라벨
+          // (개략도 "동해" vs 상세 "동해항 X부두")이 의도되며, 위치별 최상세 셀만
+          // 그릴 경우 개략도 라벨이 잘려 정보가 거의 안 보이게 됨.
+          // 진짜 중복은 텍스트 문자열+위치 spatial dedup이 제거.
           if (this.declutter) {
             const a = r.feat._pg && r.feat._pg.anchor;
             if (a && op.text) {

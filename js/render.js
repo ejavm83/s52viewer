@@ -141,8 +141,15 @@ class Viewport {
   constructor(canvas) {
     this.canvas = canvas;
     this.scale = 1;
-    this.cx = 0; // center in mercX units
+    this.cx = 0; // center in mercX units (radians of longitude)
     this.cy = 0; // center in mercY units
+    // ── 3D 지구본 모드 ──
+    // mode === "globe"이면 직교투영(orthographic)으로 구체를 그리고, 드래그는
+    // 회전으로 동작한다. auto3D가 true이면 충분히 축소(=scale 작아짐)됐을 때
+    // 자동으로 globe ↔ mercator를 전환한다.
+    this.mode = "mercator";        // "mercator" | "globe"
+    this.auto3D = true;            // 임계 scale 아래면 자동 globe
+    this._globeLat = 0;            // globe 중심 위도(라디안)
   }
   fit(bounds) {
     const w = this.canvas.width, h = this.canvas.height;
@@ -153,6 +160,7 @@ class Viewport {
     this.scale = Math.min(w / dx, h / dy) * 0.92;
     this.cx = (x0 + x1) / 2;
     this.cy = (y0 + y1) / 2;
+    this._globeLat = this.centerLatRad();
   }
   // mercator units -> screen pixels (the per-frame hot path: no transcendentals)
   sx(mx) { return (mx - this.cx) * this.scale + this.canvas.width / 2; }
@@ -160,6 +168,75 @@ class Viewport {
   project(lon, lat) { return [this.sx(mercX(lon)), this.sy(mercY(lat))]; }
   centerLat() {
     return (2 * Math.atan(Math.exp(this.cy)) - Math.PI / 2) * 180 / Math.PI;
+  }
+  centerLatRad() {
+    return 2 * Math.atan(Math.exp(this.cy)) - Math.PI / 2;
+  }
+
+  // ── 3D 지구본 모드 헬퍼 ──
+
+  /**
+   * 현재 화면 폭에 세계 둘레가 1 바퀴 이상 들어오면 globe로 자동 전환되도록 한 임계 scale.
+   * 머케이터 X 단위는 라디안이므로 화면 폭에 2π가 들어맞는 시점이 기준.
+   */
+  globeThresholdScale() {
+    return this.canvas.width / (2 * Math.PI) * 1.05;
+  }
+  /** 현재 표시 모드가 globe인지(명시 모드 우선, 자동 모드면 scale 기준) */
+  isGlobeView() {
+    if (this.mode === "globe") return true;
+    if (this.mode === "mercator") return false; // 명시적으로 평면 고정
+    // mode === "auto" 등은 미사용 — auto3D 플래그로 통제
+    return false;
+  }
+  /** scale 기반 자동 전환: auto3D일 때만 동작. 호출 측에서 매 입력 직후 부른다. */
+  syncAutoMode() {
+    if (!this.auto3D) return;
+    const t = this.globeThresholdScale();
+    if (this.scale < t && this.mode !== "globe") this.enterGlobe();
+    else if (this.scale >= t && this.mode === "globe") this.exitGlobe();
+  }
+  enterGlobe() {
+    this._globeLat = this.centerLatRad();
+    this.mode = "globe";
+  }
+  exitGlobe() {
+    // globe 중심 위·경도를 mercator 좌표로 되돌린다.
+    this.cy = mercY(this._globeLat * 180 / Math.PI);
+    this.mode = "mercator";
+  }
+  /** globe 반지름(픽셀). scale을 단일 변수로 쓰기 위해 scale을 그대로 반지름으로 사용. */
+  globeRadius() {
+    return Math.max(20, this.scale);
+  }
+  /**
+   * 직교투영(globe 표면 위의 점 → 화면 픽셀).
+   * 반환 {x, y, visible}. visible=false이면 지구 뒤편(그리지 않음).
+   */
+  projOrtho(lonRad, latRad) {
+    const cLon = this.cx; // mercX(lon)은 lonRad와 동일 단위
+    const cLat = this._globeLat;
+    const cosLat = Math.cos(latRad), sinLat = Math.sin(latRad);
+    const cosCLat = Math.cos(cLat), sinCLat = Math.sin(cLat);
+    const dLon = lonRad - cLon;
+    const cosDLon = Math.cos(dLon), sinDLon = Math.sin(dLon);
+    const cosC = sinCLat * sinLat + cosCLat * cosLat * cosDLon;
+    const r = this.globeRadius();
+    const x = r * cosLat * sinDLon;
+    const y = r * (cosCLat * sinLat - sinCLat * cosLat * cosDLon);
+    return {
+      x: this.canvas.width / 2 + x,
+      y: this.canvas.height / 2 - y,
+      visible: cosC > 0,
+    };
+  }
+  /** globe 모드에서 마우스 회전. dx, dy는 픽셀 변위. */
+  rotateGlobeByPixels(dx, dy) {
+    const r = this.globeRadius();
+    // 픽셀 → 라디안: 단순화하여 scale 기준 1:1
+    this.cx -= dx / r;
+    this._globeLat = Math.max(-Math.PI / 2 + 0.01,
+                     Math.min(Math.PI / 2 - 0.01, this._globeLat + dy / r));
   }
   // Representative display-scale denominator (1:N) for SCAMIN comparison.
   scaleDenominator() {
@@ -304,6 +381,8 @@ class Renderer {
   }
 
   render() {
+    // 3D 지구본 모드는 별도 경로로 그린다(머케이터 파이프라인을 우회).
+    if (this.vp.isGlobeView()) { this._renderGlobe(); return; }
     const ctx = this.ctx, vp = this.vp;
     const w = this.canvas.width, h = this.canvas.height;
     ctx.fillStyle = this.s52.color("DEPDW");
@@ -452,10 +531,159 @@ class Renderer {
     this._snap.getContext("2d").drawImage(this.canvas, 0, 0);
   }
   previewPan(ox, oy) {
+    // globe 모드는 회전(orthographic)이라 평면 이동 프리뷰가 어색하므로 매번 풀 렌더.
+    if (this.vp.isGlobeView()) { this.render(); return; }
     const ctx = this.ctx;
     ctx.fillStyle = this.s52.color("DEPDW");
     ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
     if (this._snap) ctx.drawImage(this._snap, ox, oy);
+  }
+
+  /**
+   * 3D 지구본(직교투영) 렌더링.
+   * 머케이터로는 표현이 어색해지는 매우 축소된 뷰에서 사용한다. 구체 배경 + 위·경도 그리드 +
+   * 로드된 셀의 외곽 사각형(육안 식별용)을 그린다. 자세한 피처 도형은 이 축척에선 한 픽셀
+   * 미만이라 의미가 없어 생략.
+   */
+  _renderGlobe() {
+    const ctx = this.ctx, vp = this.vp;
+    const w = this.canvas.width, h = this.canvas.height;
+    const cx = w / 2, cy = h / 2;
+    const R = vp.globeRadius();
+
+    // 별이 박힌 검정 배경
+    ctx.fillStyle = "#05080d";
+    ctx.fillRect(0, 0, w, h);
+    this._drawStars();
+
+    // 구체 외곽 — 살짝 밝은 푸른 림
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, R + 1.5, 0, Math.PI * 2);
+    ctx.strokeStyle = "rgba(120,180,240,0.55)";
+    ctx.lineWidth = 3;
+    ctx.stroke();
+
+    // 구체 디스크(바다색)
+    ctx.beginPath();
+    ctx.arc(cx, cy, R, 0, Math.PI * 2);
+    ctx.fillStyle = this.s52.color("DEPDW");
+    ctx.fill();
+
+    // 클리핑 — 이 시점부터 구체 안쪽만 그리기
+    ctx.beginPath();
+    ctx.arc(cx, cy, R, 0, Math.PI * 2);
+    ctx.clip();
+
+    // 위·경도 그리드
+    this._drawGlobeGraticule();
+
+    // 로드된 ENC 셀의 경계 사각형 — 한국 ENC라면 한반도 근해에 몰림
+    this._drawGlobeCells();
+
+    ctx.restore();
+
+    // 중앙 크로스헤어(회전 중심 표시)
+    ctx.strokeStyle = "rgba(220,40,40,0.9)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(cx - 10, cy); ctx.lineTo(cx + 10, cy);
+    ctx.moveTo(cx, cy - 10); ctx.lineTo(cx, cy + 10);
+    ctx.stroke();
+
+    this.lastStats = { drawn: this.cells.size, culled: 0, denom: Math.round(vp.scaleDenominator()) };
+  }
+
+  /** 결정론적 별 점들(중심·크기 고정으로 매 프레임 같은 패턴). */
+  _drawStars() {
+    const ctx = this.ctx;
+    const w = this.canvas.width, h = this.canvas.height;
+    // 단순 LCG로 결정론적 분포
+    let s = 1234567;
+    const rand = () => (s = (s * 1664525 + 1013904223) >>> 0) / 0xffffffff;
+    ctx.fillStyle = "rgba(255,255,255,0.7)";
+    const n = Math.floor((w * h) / 6000);
+    for (let i = 0; i < n; i++) {
+      const x = rand() * w, y = rand() * h, r = rand() * 1.1 + 0.2;
+      ctx.fillRect(x, y, r, r);
+    }
+  }
+
+  _drawGlobeGraticule() {
+    const ctx = this.ctx, vp = this.vp;
+    ctx.strokeStyle = "rgba(255,255,255,0.18)";
+    ctx.lineWidth = 1;
+    // 위도(가로) 15° 간격
+    for (let latDeg = -75; latDeg <= 75; latDeg += 15) {
+      const lat = latDeg * Math.PI / 180;
+      ctx.beginPath();
+      let started = false;
+      for (let lonDeg = -180; lonDeg <= 180; lonDeg += 5) {
+        const p = vp.projOrtho(lonDeg * Math.PI / 180, lat);
+        if (!p.visible) { started = false; continue; }
+        if (!started) { ctx.moveTo(p.x, p.y); started = true; }
+        else ctx.lineTo(p.x, p.y);
+      }
+      ctx.stroke();
+    }
+    // 경도(세로) 15° 간격
+    for (let lonDeg = -180; lonDeg < 180; lonDeg += 15) {
+      const lon = lonDeg * Math.PI / 180;
+      ctx.beginPath();
+      let started = false;
+      for (let latDeg = -85; latDeg <= 85; latDeg += 5) {
+        const p = vp.projOrtho(lon, latDeg * Math.PI / 180);
+        if (!p.visible) { started = false; continue; }
+        if (!started) { ctx.moveTo(p.x, p.y); started = true; }
+        else ctx.lineTo(p.x, p.y);
+      }
+      ctx.stroke();
+    }
+    // 적도·자오선 강조
+    ctx.strokeStyle = "rgba(255,255,255,0.32)";
+    ctx.beginPath();
+    let started = false;
+    for (let lonDeg = -180; lonDeg <= 180; lonDeg += 4) {
+      const p = vp.projOrtho(lonDeg * Math.PI / 180, 0);
+      if (!p.visible) { started = false; continue; }
+      if (!started) { ctx.moveTo(p.x, p.y); started = true; }
+      else ctx.lineTo(p.x, p.y);
+    }
+    ctx.stroke();
+  }
+
+  _drawGlobeCells() {
+    const ctx = this.ctx, vp = this.vp;
+    ctx.lineWidth = 1.2;
+    for (const cell of this.cells.values()) {
+      const b = cell.bounds;
+      if (!b || b.maxX === undefined) continue;
+      const visible = cell.visible && cell.loaded;
+      ctx.fillStyle = visible ? "rgba(80,200,255,0.32)" : "rgba(255,255,255,0.08)";
+      ctx.strokeStyle = visible ? "rgba(120,220,255,0.85)" : "rgba(255,255,255,0.35)";
+      // 셀 외곽을 16분할해 경계가 곡선으로 보이도록
+      const pts = [];
+      const N = 4;
+      // 아래변 (minY) 좌→우
+      for (let i = 0; i <= N; i++) pts.push([b.minX + (b.maxX - b.minX) * i / N, b.minY]);
+      // 우변 (maxX) 아→위
+      for (let i = 1; i <= N; i++) pts.push([b.maxX, b.minY + (b.maxY - b.minY) * i / N]);
+      // 위변 (maxY) 우→좌
+      for (let i = 1; i <= N; i++) pts.push([b.maxX - (b.maxX - b.minX) * i / N, b.maxY]);
+      // 좌변 (minX) 위→아
+      for (let i = 1; i < N; i++) pts.push([b.minX, b.maxY - (b.maxY - b.minY) * i / N]);
+
+      ctx.beginPath();
+      let started = false, anyVisible = false;
+      for (const [lonDeg, latDeg] of pts) {
+        const p = vp.projOrtho(lonDeg * Math.PI / 180, latDeg * Math.PI / 180);
+        if (!p.visible) { started = false; continue; }
+        anyVisible = true;
+        if (!started) { ctx.moveTo(p.x, p.y); started = true; }
+        else ctx.lineTo(p.x, p.y);
+      }
+      if (anyVisible) { ctx.closePath(); ctx.fill(); ctx.stroke(); }
+    }
   }
 
   _drawGrid() {

@@ -2,7 +2,7 @@ import { DDF } from "./iso8211.js";
 import { S57 } from "./s57.js";
 import { S52 } from "./s52.js?v=3";
 import { loadCatalog } from "./catalog.js";
-import { Renderer } from "./render.js?v=26";
+import { Renderer } from "./render.js?v=28";
 
 const ATLAS_BY_TABLE = {
   DAY_BRIGHT: "assets/rastersymbols-day.png",
@@ -1053,6 +1053,13 @@ document.getElementById("text").addEventListener("change", (e) => { state.render
 document.getElementById("sound").addEventListener("change", (e) => { state.renderer.showSoundings = e.target.checked; draw(); });
 document.getElementById("scamin").addEventListener("change", (e) => { state.renderer.respectScamin = e.target.checked; draw(); });
 document.getElementById("declutter").addEventListener("change", (e) => { state.renderer.declutter = e.target.checked; draw(); });
+document.getElementById("globe3d").addEventListener("change", (e) => {
+  const vp = state.renderer.vp;
+  vp.auto3D = e.target.checked;
+  if (!vp.auto3D && vp.mode === "globe") vp.exitGlobe();
+  else if (vp.auto3D) vp.syncAutoMode();
+  draw();
+});
 document.getElementById("grid").addEventListener("change", (e) => {
   state.renderer.showGrid = e.target.checked;
   if (e.target.checked) state.renderer.invalidateEncBoundaryResIfStale();
@@ -1093,15 +1100,24 @@ window.addEventListener("mousemove", (e) => {
   if (!dragging) return;
   if (Math.abs(e.clientX - startX) + Math.abs(e.clientY - startY) > 2) moved = true;
   const vp = state.renderer.vp;
-  vp.cx -= (e.clientX - lastX) / vp.scale; vp.cy += (e.clientY - lastY) / vp.scale;
+  const dx = e.clientX - lastX, dy = e.clientY - lastY;
   lastX = e.clientX; lastY = e.clientY;
-  // cheap: blit the snapshot shifted by the total drag, no feature drawing
-  state.renderer.previewPan(e.clientX - startX, e.clientY - startY);
-  if (moved) applyCellListFilter();
+  if (vp.isGlobeView()) {
+    // 지구본 회전 — 픽셀 변위만큼 중심 경·위도 이동(픽셀당 1/R 라디안)
+    vp.rotateGlobeByPixels(dx, dy);
+    draw();
+  } else {
+    vp.cx -= dx / vp.scale; vp.cy += dy / vp.scale;
+    state.renderer.previewPan(e.clientX - startX, e.clientY - startY);
+    if (moved) applyCellListFilter();
+  }
 });
 canvas.addEventListener("wheel", (e) => {
   e.preventDefault();
-  state.renderer.vp.scale *= e.deltaY < 0 ? WHEEL_ZOOM_FACTOR : 1 / WHEEL_ZOOM_FACTOR;
+  const vp = state.renderer.vp;
+  vp.scale *= e.deltaY < 0 ? WHEEL_ZOOM_FACTOR : 1 / WHEEL_ZOOM_FACTOR;
+  // 충분히 확대/축소되면 자동 모드 전환(globe ↔ mercator)
+  vp.syncAutoMode();
   draw();
   if (isMobileLayout()) scheduleMobileViewportSync();
 }, { passive: false });
@@ -1198,6 +1214,7 @@ window.addEventListener("keydown", (e) => {
   }
   if (!handled) return;
   e.preventDefault();
+  state.renderer.vp.syncAutoMode();
   draw();
   if (isMobileLayout()) scheduleMobileViewportSync();
 });

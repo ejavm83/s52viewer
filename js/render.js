@@ -980,6 +980,8 @@ class Renderer {
     const limbCos = 1 / vp.globeCameraDistance();
     const EPS = 1e-7;
     const inside = (p) => p.z >= limbCos - EPS;
+    // 보간점에는 onLimb=true 플래그를 명시 — 정규화 후 z가 limbCos에서 미세하게 어긋나도
+    // 다운스트림 `_appendGlobeFillRing`이 림 호로 연결할지 직선으로 연결할지 정확히 판정 가능.
     const inter = (A, B) => {
       const dz = B.z - A.z;
       if (Math.abs(dz) < 1e-11) return null;
@@ -989,7 +991,7 @@ class Renderer {
       const y = A.y + t * (B.y - A.y);
       const z = A.z + t * (B.z - A.z);
       const L = Math.hypot(x, y, z) || 1e-9;
-      return { x: x / L, y: y / L, z: z / L };
+      return { x: x / L, y: y / L, z: z / L, onLimb: true };
     };
     const n = verts.length;
     if (n < 2) return null;
@@ -1032,7 +1034,10 @@ class Renderer {
   }
 
   /**
-   * globe **면 채움**: 반구 클립 후 화면 폴리곤(자기교차 없음).
+   * globe **면 채움**: 반구 클립 후 화면 폴리곤.
+   * 림 위에 놓인 두 인접 정점(폴리곤이 지평선을 가로지를 때 클립이 만든 점)은
+   * 화면 직선(chord)이 아니라 **림 원호(arc)** 로 연결해 채움이 디스크 안쪽으로
+   * 부풀어 바다 영역까지 노란색으로 덮는 잔상을 막는다.
    */
   _appendGlobeFillRing(ctx, ring) {
     const vp = this.vp;
@@ -1040,12 +1045,38 @@ class Renderer {
     if (!raw) return;
     const clipped = this._clipViewRingToGlobeFront(vp, raw);
     if (!clipped) return;
+    // 림 정점 판정: 클립 단계에서 보간으로 만들어진 점에만 onLimb=true 플래그가 있음.
+    // (z를 비교하면 단위구면 재정규화로 인한 미세 오차로 검출이 빠진다.)
+    const onLimb = (v) => v.onLimb === true;
+    const cx = vp.canvas.width / 2, cy = vp.canvas.height / 2;
+    const limbR = vp.globeRadius();
+    const angleOf = (v) => {
+      const p = this._viewUnitToGlobeScreen(vp, v);
+      return Math.atan2(p.y - cy, p.x - cx);
+    };
+    /** prev → cur 한 구간을 패스에 추가: 둘 다 림 점이면 림 호, 아니면 직선. */
+    const stepTo = (prev, cur) => {
+      if (onLimb(prev) && onLimb(cur)) {
+        const a1 = angleOf(prev);
+        const a2 = angleOf(cur);
+        let dA = a2 - a1;
+        while (dA > Math.PI) dA -= 2 * Math.PI;
+        while (dA < -Math.PI) dA += 2 * Math.PI;
+        ctx.arc(cx, cy, limbR, a1, a1 + dA, dA < 0);
+      } else {
+        const p = this._viewUnitToGlobeScreen(vp, cur);
+        ctx.lineTo(p.x, p.y);
+      }
+    };
     const p0 = this._viewUnitToGlobeScreen(vp, clipped[0]);
     ctx.moveTo(p0.x, p0.y);
     for (let i = 1; i < clipped.length; i++) {
-      const p = this._viewUnitToGlobeScreen(vp, clipped[i]);
-      ctx.lineTo(p.x, p.y);
+      stepTo(clipped[i - 1], clipped[i]);
     }
+    // ── 닫힘 간선도 같은 규칙 적용 ──
+    // closePath()는 항상 직선으로 마지막→첫 정점을 연결한다. 폴리곤이 림 위에서 시작·끝나면
+    // 그 직선이 디스크를 가로질러 노란색 사선이 된다. 직접 stepTo로 연결한 뒤 closePath.
+    stepTo(clipped[clipped.length - 1], clipped[0]);
     ctx.closePath();
   }
 
@@ -1272,18 +1303,19 @@ class Renderer {
       // 좌변 (minX) 위→아
       for (let i = 1; i < N; i++) pts.push([b.minX, b.maxY - (b.maxY - b.minY) * i / N]);
 
-      ctx.beginPath();
-      let started = false, anyVisible = false, allVisible = true;
+      // 모든 정점이 앞면일 때만 그림 — 부분 가시 셀은 끊긴 호 조각이 사선처럼 보이므로 통째 스킵.
+      const projs = [];
+      let allVisible = true;
       for (const [lonDeg, latDeg] of pts) {
         const p = vp.projOrtho(lonDeg * Math.PI / 180, latDeg * Math.PI / 180);
-        if (!p.visible) { started = false; allVisible = false; continue; }
-        anyVisible = true;
-        if (!started) { ctx.moveTo(p.x, p.y); started = true; }
-        else ctx.lineTo(p.x, p.y);
+        if (!p.visible) { allVisible = false; break; }
+        projs.push(p);
       }
-      if (!anyVisible) continue;
-      // 전체가 앞면일 때만 closePath() — 부분 가시 셀은 마지막 점→첫 점 직선 폐쇄가 사선 잔상을 만들기 때문.
-      if (allVisible) ctx.closePath();
+      if (!allVisible) continue;
+      ctx.beginPath();
+      ctx.moveTo(projs[0].x, projs[0].y);
+      for (let i = 1; i < projs.length; i++) ctx.lineTo(projs[i].x, projs[i].y);
+      ctx.closePath();
       ctx.stroke();
     }
   }

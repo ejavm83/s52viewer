@@ -2,7 +2,7 @@ import { DDF } from "./iso8211.js";
 import { S57 } from "./s57.js";
 import { S52 } from "./s52.js?v=3";
 import { loadCatalog } from "./catalog.js";
-import { Renderer } from "./render.js?v=43";
+import { Renderer } from "./render.js?v=47";
 
 const ATLAS_BY_TABLE = {
   DAY_BRIGHT: "assets/rastersymbols-day.png",
@@ -1139,10 +1139,12 @@ function startGlobeSpinFromDragVelocity() {
   const sp = Math.hypot(_globeDragVelX, _globeDragVelY);
   const MIN_START = 28;
   if (sp < MIN_START) return;
-  const MAX = 5200;
+  const MAX = 2400;
+  /** 손을 뗀 직후 관성 각도 — 1에 가까울수록 많이 미끄러짐 */
+  const SPIN_GAIN = 0.38;
   const nx = _globeDragVelX / sp;
   const ny = _globeDragVelY / sp;
-  const mag = Math.min(sp, MAX);
+  const mag = Math.min(sp, MAX) * SPIN_GAIN;
   if (_globeSpinRaf) {
     cancelAnimationFrame(_globeSpinRaf);
     _globeSpinRaf = 0;
@@ -1150,8 +1152,8 @@ function startGlobeSpinFromDragVelocity() {
   _globeSpinVelX = nx * mag;
   _globeSpinVelY = ny * mag;
 
-  const TAU_MS = 2100;
-  const STOP_BELOW = 14;
+  const TAU_MS = 950;
+  const STOP_BELOW = 18;
   let lastT = performance.now();
   const step = (now) => {
     const vp2 = state.renderer?.vp;

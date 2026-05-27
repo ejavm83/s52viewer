@@ -131,6 +131,19 @@ function isMnsysFeat(feat) {
   return n === 306;
 }
 // ratio is wrong, so X is longitude in radians — not degrees.
+/**
+ * S-52 색상 문자열 `rgb(r,g,b)` 또는 `#rrggbb` → `[r, g, b]` 숫자 배열.
+ * 형식 인식 실패 시 null.
+ */
+function parseRgbColor(s) {
+  if (!s || typeof s !== "string") return null;
+  let m = s.match(/^rgb\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)$/i);
+  if (m) return [+m[1], +m[2], +m[3]];
+  m = s.match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
+  if (m) return [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)];
+  return null;
+}
+
 function mercX(lonDeg) {
   return (lonDeg * Math.PI) / 180;
 }
@@ -165,10 +178,26 @@ class Viewport {
     this.zoomOutMinScale = this.zoomOutMinScale == null ? s
       : Math.min(this.zoomOutMinScale, s);
   }
-  /** 사용자 줌 입력용: zoomOutMinScale 미만으로 내려가지 않게 한다. */
+  /**
+   * 핀치·휠 등 사용자 축소(scale 감소) 입력의 scale 하한.
+   * fit 직후 `zoomOutMinScale`이 지역 확대(=scale 큼)로 잡히면 그 값이
+   * 3D 자동 전환 임계(`globeThresholdScale`)보다 크게 남아, 모바일에서 축소해도
+   * 지구본으로 못 들어가는 경우가 있다. `auto3D`일 때는 하한을 임계 아래까지
+   * 낮춰 축소 시 3D로 진입할 수 있게 한다.
+   */
+  minScaleForUserZoom() {
+    if (this.zoomOutMinScale == null || !Number.isFinite(this.zoomOutMinScale)) return null;
+    if (!this.auto3D) return this.zoomOutMinScale;
+    if (typeof this.globeThresholdScale !== "function") return this.zoomOutMinScale;
+    const th = this.globeThresholdScale();
+    if (!(th > 0) || !Number.isFinite(th)) return this.zoomOutMinScale;
+    return Math.min(this.zoomOutMinScale, th * 0.98);
+  }
+  /** 사용자 줌 입력용: `minScaleForUserZoom` 미만으로 내려가지 않게 한다. */
   clampScaleForUserZoom(s) {
-    if (this.zoomOutMinScale == null || !Number.isFinite(s)) return s;
-    return Math.max(s, this.zoomOutMinScale);
+    const lo = this.minScaleForUserZoom();
+    if (lo == null || !Number.isFinite(s)) return s;
+    return Math.max(s, lo);
   }
   fit(bounds) {
     const w = this.canvas.width, h = this.canvas.height;
@@ -207,12 +236,17 @@ class Viewport {
     return 1 + this.globeFocalLength() / Math.max(1, this.scale);
   }
   /**
-   * D가 1에 가까워지면(=카메라가 표면에 매우 가까워지면) 보이는 패치가 거의 평면.
-   * 그 시점에서 머케이터로 전환하면 같은 위치·축척의 패치가 그대로 이어져 시각적 점프가 사라진다.
-   * D=1.1 ↔ scale = f*10.
+   * Globe ↔ Mercator 전환 임계 scale.
+   * 사용자가 충분히 확대한 뒤에야 평면 머케이터로 전환되도록 `f·5`로 설정.
+   * 이 시점에서 카메라 거리 D ≈ 1.2로 표면에 꽤 가까워 보이는 패치가 거의 평탄해지며,
+   * 모드 전환 크로스페이드와 임계 스냅이 시각적 점프를 추가로 완화한다.
+   *
+   * - Globe(원근): 시야 폭 ≈ 2·acos(1/D), D = 1 + f/S
+   * - Mercator: 시야 폭 ≈ canvas_width / S (라디안)
+   * f·5에서: globe ≈ 67°, mercator ≈ 48° — 약간의 줌인 효과로 자연스러움.
    */
   globeThresholdScale() {
-    return this.globeFocalLength() * 10;
+    return this.globeFocalLength() * 5;
   }
   /** 현재 표시 모드가 globe인지(명시 모드 우선, 자동 모드면 scale 기준) */
   isGlobeView() {
@@ -229,12 +263,16 @@ class Viewport {
     else if (this.scale >= t && this.mode === "globe") this.exitGlobe();
   }
   enterGlobe() {
+    if (this.mode === "globe") return;
     this._globeLat = this.centerLatRad();
+    this._modeTransition = { from: "mercator", to: "globe", startTime: performance.now(), duration: 280 };
     this.mode = "globe";
   }
   exitGlobe() {
+    if (this.mode !== "globe") return;
     // globe 중심 위·경도를 mercator 좌표로 되돌린다.
     this.cy = mercY(this._globeLat * 180 / Math.PI);
+    this._modeTransition = { from: "globe", to: "mercator", startTime: performance.now(), duration: 280 };
     this.mode = "mercator";
   }
   /**
@@ -469,8 +507,48 @@ class Renderer {
     // 축척만 바뀌고 syncAutoMode가 빠지는 경로(초기 fit, 터치 핀치 등)에서도
     // 자동 지구본 전환이 되도록 매 프레임 동기화(비용은 비교·분기 수준).
     if (this.vp.auto3D) this.vp.syncAutoMode();
+    // ── 모드 전환 크로스페이드 ──
+    // Globe ↔ Mercator 모드 전환 시 두 모드를 짧게 동시 렌더해 알파 교차로 부드럽게 연결.
+    // 단순한 mode flip의 시각적 점프를 시간축에서 흩어 줘 자연스럽게 보이게 한다.
+    const tr = this.vp._modeTransition;
+    if (tr) {
+      const now = performance.now();
+      const elapsed = now - tr.startTime;
+      if (elapsed >= tr.duration) {
+        this.vp._modeTransition = null;
+        // 정상 렌더 진행
+      } else {
+        const t = elapsed / tr.duration;
+        const easedT = t * t * (3 - 2 * t); // smoothstep
+        const ctx0 = this.ctx;
+        const w0 = this.canvas.width, h0 = this.canvas.height;
+        ctx0.fillStyle = "#000";
+        ctx0.fillRect(0, 0, w0, h0);
+        // 나가는 모드(이전 mode 상태로 일시 복원)
+        const curMode = this.vp.mode;
+        ctx0.save();
+        ctx0.globalAlpha = 1 - easedT;
+        this.vp.mode = tr.from;
+        if (tr.from === "globe") this._renderGlobe(); else this._renderMercator();
+        ctx0.restore();
+        // 들어오는 모드
+        ctx0.save();
+        ctx0.globalAlpha = easedT;
+        this.vp.mode = tr.to;
+        if (tr.to === "globe") this._renderGlobe(); else this._renderMercator();
+        ctx0.restore();
+        this.vp.mode = curMode;
+        // 다음 프레임 예약
+        if (typeof this.onTransitionFrame === "function") this.onTransitionFrame();
+        return;
+      }
+    }
     // 3D 지구본 모드는 별도 경로로 그린다(머케이터 파이프라인을 우회).
     if (this.vp.isGlobeView()) { this._renderGlobe(); return; }
+    this._renderMercator();
+  }
+
+  _renderMercator() {
     const ctx = this.ctx, vp = this.vp;
     const w = this.canvas.width, h = this.canvas.height;
     ctx.fillStyle = this.s52.color("DEPDW");
@@ -670,18 +748,20 @@ class Renderer {
     ctx.fillRect(0, 0, w, h);
     this._drawStars();
 
-    // 대기 글로우 — 구체 림 바깥쪽에 부드러운 푸른 빛
+    // 대기 글로우 — 구체 림 바깥쪽에 부드러운 푸른 빛(2D 머케이터의 DEPDW 색조에 맞춤)
+    const oceanColor = this.s52.color("DEPDW");
+    const oceanRgb = parseRgbColor(oceanColor) || [115, 182, 239];
+    const [or, og, ob] = oceanRgb;
     const glow = ctx.createRadialGradient(cx, cy, R * 0.98, cx, cy, R * 1.18);
-    glow.addColorStop(0, "rgba(120, 180, 240, 0.55)");
-    glow.addColorStop(0.5, "rgba(70, 130, 200, 0.25)");
-    glow.addColorStop(1, "rgba(20, 50, 100, 0)");
+    glow.addColorStop(0, `rgba(${or},${og},${ob},0.55)`);
+    glow.addColorStop(0.5, `rgba(${or},${og},${ob},0.22)`);
+    glow.addColorStop(1, `rgba(${or},${og},${ob},0)`);
     ctx.fillStyle = glow;
     ctx.beginPath(); ctx.arc(cx, cy, R * 1.18, 0, Math.PI * 2); ctx.fill();
 
-    // 구체 디스크 — 단색. Canvas 방사 그라데이션(특히 편심)은 원과 맞지 않는 등색선으로
-    // 사선·띠가 보이기 쉬우며, 동심 그라데이션도 정지점에서 띠가 남을 수 있어 단색으로 둔다.
-    // 림의 푸른 톤은 위「대기 글로우」가 담당한다.
-    ctx.fillStyle = "#1f4d80";
+    // 구체 디스크 — **2D 머케이터와 동일한 S-52 DEPDW 색**으로 두 모드 간 색 이질감 제거.
+    // 단색 채움(방사 그라데이션은 정지점 띠가 보이기 쉬워 피함). 림 부근 푸른 톤은 위 글로우가 담당.
+    ctx.fillStyle = oceanColor;
     ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.fill();
 
     // 클리핑 — 이 시점부터 구체 안쪽만 그리기

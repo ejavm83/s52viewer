@@ -1,5 +1,9 @@
 # 변경 기록
 
+## v0.2.2 (2026-05-27)
+
+- **모바일 자동 3D**: 지역 초기 `fit`으로 `zoomOutMinScale`이 3D 전환 임계보다 크게 잡혀 핀치 축소만으로는 지구본에 못 들어가던 문제를, `auto3D`일 때 사용자 줌 하한을 `min(zoomOutMinScale, globeThreshold×0.98)`으로 완화해 해결 (`Viewport.minScaleForUserZoom`, `render.js`, `main.js`).
+
 ## v0.2.1 (2026-05-28)
 
 - **줌 축소 한계**: `fit`으로 맞춘 축척보다 휠·키·핀치로 더 축소되지 않도록 하한을 두고, 전역 맞춤 등으로 다시 맞출 때만 그만큼까지 축소 허용. 부드러운 줌·즐겨찾기 복원에도 동일 적용 (`render.js`, `main.js`).

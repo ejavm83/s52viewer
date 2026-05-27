@@ -2,7 +2,7 @@ import { DDF } from "./iso8211.js";
 import { S57 } from "./s57.js";
 import { S52 } from "./s52.js?v=3";
 import { loadCatalog } from "./catalog.js";
-import { Renderer } from "./render.js?v=48";
+import { Renderer } from "./render.js?v=53";
 
 const ATLAS_BY_TABLE = {
   DAY_BRIGHT: "assets/rastersymbols-day.png",
@@ -196,6 +196,8 @@ async function init() {
   state.renderer = new Renderer(canvas, state.s52, state.atlas.DAY_BRIGHT);
   // 3D 지구본 대륙 데이터 비동기 로드 완료 시 자동 재렌더링
   state.renderer.onWorldLandReady = () => { if (state.fitted) draw(); };
+  // 모드 전환 크로스페이드 중 매 프레임 다시 그리도록 콜백 — Renderer가 진행 중인 transition 알려옴
+  state.renderer.onTransitionFrame = () => requestAnimationFrame(() => draw());
 
   setStatus("셀 커버리지 인덱스 로드 중…");
   let idxRes = await fetch("/cell-index.json", { cache: "no-store" });
@@ -1254,7 +1256,14 @@ canvas.addEventListener("wheel", (e) => {
   e.preventDefault();
   const vp = state.renderer.vp;
   const base = _zoomAnimTarget || vp.scale;
-  const target = base * (e.deltaY < 0 ? WHEEL_ZOOM_FACTOR : 1 / WHEEL_ZOOM_FACTOR);
+  let target = base * (e.deltaY < 0 ? WHEEL_ZOOM_FACTOR : 1 / WHEEL_ZOOM_FACTOR);
+  // ── Globe ↔ Mercator 임계 스냅 ──
+  // 휠 한 번이 globe→mercator 전환선을 한꺼번에 가로지르지 않도록 임계 scale에서 일단 멈춤.
+  // 한 번 더 굴리면 모드가 바뀌어 계속 줌. 결과: 모드 전환과 스케일 점프가 분리되어 매끄럽게 보임.
+  if (vp.auto3D && typeof vp.globeThresholdScale === "function") {
+    const th = vp.globeThresholdScale();
+    if ((base < th && target > th) || (base > th && target < th)) target = th;
+  }
   const rect = canvas.getBoundingClientRect();
   const fx = e.clientX - rect.left;
   const fy = e.clientY - rect.top;
@@ -1345,11 +1354,21 @@ window.addEventListener("keydown", (e) => {
     handled = true;
   } else if (isZoomInKey(e)) {
     const cx = canvas.width / 2, cy = canvas.height / 2;
-    vp.zoomAtScreen(cx, cy, vp.scale * ZOOM_KEY_FACTOR);
+    let next = vp.scale * ZOOM_KEY_FACTOR;
+    if (vp.auto3D) {
+      const th = vp.globeThresholdScale();
+      if (vp.scale < th && next > th) next = th; // 임계 스냅
+    }
+    vp.zoomAtScreen(cx, cy, next);
     handled = true;
   } else if (isZoomOutKey(e)) {
     const cx = canvas.width / 2, cy = canvas.height / 2;
-    vp.zoomAtScreen(cx, cy, vp.scale / ZOOM_KEY_FACTOR);
+    let next = vp.scale / ZOOM_KEY_FACTOR;
+    if (vp.auto3D) {
+      const th = vp.globeThresholdScale();
+      if (vp.scale > th && next < th) next = th; // 임계 스냅
+    }
+    vp.zoomAtScreen(cx, cy, next);
     handled = true;
   }
   if (!handled) return;
@@ -1415,7 +1434,7 @@ canvas.addEventListener("touchmove", (e) => {
     const rect = canvas.getBoundingClientRect();
     const d = touchDistance(t0, t1);
     const factor = d / pinch.dist;
-    const lo = vp.zoomOutMinScale != null ? vp.zoomOutMinScale : 200;
+    const lo = vp.minScaleForUserZoom() ?? 200;
     const newScale = vp.clampScaleForUserZoom(Math.min(8e7, Math.max(lo, pinch.scale * factor)));
     const cx = ((t0.clientX + t1.clientX) / 2) - rect.left;
     const cy = ((t0.clientY + t1.clientY) / 2) - rect.top;

@@ -2,7 +2,7 @@ import { DDF } from "./iso8211.js";
 import { S57 } from "./s57.js";
 import { S52 } from "./s52.js";
 import { loadCatalog } from "./catalog.js";
-import { Renderer } from "./render.js?v=18";
+import { Renderer } from "./render.js?v=23";
 
 const ATLAS_BY_TABLE = {
   DAY_BRIGHT: "assets/rastersymbols-day.png",
@@ -574,6 +574,7 @@ function syncRow(name) {
 }
 
 /** 지도·목록에서 마지막으로 포커스한 셀(.000) — 툴바·셀 목록 강조 */
+const focusedCellEl = document.getElementById("focused-cell");
 function syncCellListFocus(scrollList = true) {
   const name = state.renderer?.gridFocusName || "";
   for (const [n, r] of rows) r.el.classList.toggle("focus", n === name);

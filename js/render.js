@@ -35,6 +35,61 @@ const MIN_SEG2 = 1;
 const FLOW_ARROW_SYMBOL_RE = /^(TSSLPT|TWRTPT|RECTRC|DWRTPT|RCTLPT|TSSRON|DWRUTE|CURENT|FLDSTR|EBBSTR|TIDSTR|CURDEF)/i;
 const FLOW_ARROW_MIN_DIST_PX = 64;
 
+/**
+ * 항행보조 시설(부이·비컨·등화·표지 등) 약어 접두 — 다중 축척 셀의 중복
+ * 표시를 묶어 잡을 dedup 대상. 좁게 잡아 어로구역·계류부표 등 개체 식별이
+ * 중요한 객체는 제외한다.
+ */
+const NAVAID_ACRONYM_RE = /^(BOY|BCN|LIGHTS|MORFAC|LNDMRK|TOPMAR|DAYMAR|RTPBCN|RDOSTA|RADRFL|RADSTA|RTPSTA|RSCSTA|SISTAT|SISTAW|SBDARE|PILBOP|PILPNT|OFSPLF|RETRFL|SLCONS)/;
+const NAVAID_DEDUP_PX = 24;
+
+/**
+ * navaid dedup 그룹 키 — 같은 그룹의 심볼이 NAVAID_DEDUP_PX 이내에 이미
+ * 그려졌으면 건너뛴다.
+ *  - LIGHTS: 색을 키에 포함해 좌·우현 등화 한 쌍은 보존
+ *  - BOY·/BCN·: 접두 3글자(BOYSPP/BOYLAT/BOYSAW 등 분류 차이 흡수)
+ *  - 그 외: 약어 전체
+ */
+function navaidGroupKey(feat) {
+  const ac = (feat.acronym || "").toUpperCase();
+  if (!NAVAID_ACRONYM_RE.test(ac)) return null;
+  if (ac === "LIGHTS") {
+    const col = String(feat.attrs.COLOUR || "").split(",")[0] || "";
+    return `LIGHTS:${col}`;
+  }
+  if (ac.startsWith("BOY") || ac.startsWith("BCN")) return ac.slice(0, 3);
+  return ac;
+}
+
+/**
+ * 공간 해시(Map<bucketKey, number[]>)에 점 (x, y)가 이미 존재하면(거리 < min)
+ * true 반환. 없으면 격자에 등록하고 false. 3×3 이웃 버킷까지 검사해
+ * 셀 경계에서 ~1 px 흔들리는 중복도 잡는다.
+ * - grid:   Map 인스턴스 (호출자가 프레임마다 초기화)
+ * - prefix: 같은 grid에 여러 그룹을 공유할 때 키 접두(없으면 빈 문자열)
+ * - g:      격자 한 칸 크기(px), min: 임계 거리(px). 보통 g===min.
+ */
+function spatialDedup(grid, prefix, x, y, g, min) {
+  const min2 = min * min;
+  const bx = Math.floor(x / g), by = Math.floor(y / g);
+  const pre = prefix ? `${prefix}|` : "";
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      const arr = grid.get(`${pre}${bx + dx},${by + dy}`);
+      if (!arr) continue;
+      for (let i = 0; i < arr.length; i += 2) {
+        const ddx = x - arr[i], ddy = y - arr[i + 1];
+        if (ddx * ddx + ddy * ddy < min2) return true;
+      }
+    }
+  }
+  const key = `${pre}${bx},${by}`;
+  let arr = grid.get(key);
+  if (!arr) { arr = []; grid.set(key, arr); }
+  arr.push(x, y);
+  return false;
+}
+
 /** S-57 메타 경계(M_COVR·M_CSCL) — UI 격자와 함께 켜고 끔. 표시범주 Other라 Standard에서도 격자 ON이면 허용 */
 const ENC_BOUNDARY_WITH_GRID = new Set(["M_COVR", "M_CSCL"]);
 
@@ -225,6 +280,12 @@ class Renderer {
     this._flowArrowGrid = new Map();
     this._pointSymbolGrid = new Map();
     const denom = vp.scaleDenominator();
+    // 동적 라벨/사운딩 글자 크기: 축척이 커질수록(=축소될수록) 글자를 줄여
+    // 화면이 라벨로 덮이는 것을 막고, 확대할수록 글자를 키워 가독성을 높인다.
+    // denom 1:5k≈14px, 1:75k≈13px, 1:500k≈11px, 1:5M≈10px
+    this._labelFontPx = Math.max(9, Math.min(16,
+      Math.round(20 - 1.5 * Math.log10(Math.max(1, denom)))));
+    this._soundingFontPx = Math.max(8, Math.min(14, this._labelFontPx - 1));
     const table = this.s52.currentTable;
     // visible Mercator window for culling (small margin)
     const halfW = (w / 2) / vp.scale * 1.05, halfH = (h / 2) / vp.scale * 1.05;
@@ -275,10 +336,14 @@ class Renderer {
           }
         }
         drawn++;
-        resolved.push({ feat, ops: res.ops, prio: res.prio });
+        resolved.push({ feat, ops: res.ops, prio: res.prio, cellCscl: cscl || Infinity });
       }
     }
     resolved.sort((a, b) => a.prio - b.prio);
+
+    // 점 심볼/사운딩용 셀 우선순위 인덱스 — 같은 위치를 여러 축척 셀이 덮을 때
+    // 가장 상세한 셀의 부이·등화·사운딩만 그리도록 위치별 최소 CSCL을 조회.
+    this._bestCsclAt = this._buildCsclLookup(denom, winMinX, winMaxX, winMinY, winMaxY);
 
     // pass 1: area fills
     for (const r of resolved) {
@@ -308,11 +373,32 @@ class Renderer {
     }
     for (const grp of lineGroups.values()) this._strokePolys(grp.rings, grp.op);
     // pass 3: point symbols, soundings, text
+    // 점 심볼/사운딩은 OpenCPN과 동일하게 "위치별 최상세 셀"만 그린다.
+    // r.cellCscl > bestCsclAt(앵커) × CSCL_TOL 이면 더 상세한 셀이 그 위치를
+    // 덮고 있으므로 이 셀의 점 심볼은 잔상으로 보고 생략.
+    const CSCL_TOL = 1.5;
     for (const r of resolved) {
       for (const op of r.ops) {
-        if (op.op === "SY") this._symbolFeature(r.feat, op.sym, op.rot);
-        else if (op.op === "SOUNDG" && this.showSoundings) this._soundings(r.feat);
-        else if (op.op === "TX" && this.showText) this._text(r.feat, op);
+        if (op.op === "SY") {
+          if (this.declutter && r.cellCscl !== Infinity) {
+            const a = r.feat._pg && r.feat._pg.anchor;
+            if (a) {
+              const best = this._bestCsclAt(a[0], a[1]);
+              if (best !== Infinity && r.cellCscl > best * CSCL_TOL) continue;
+            }
+          }
+          this._symbolFeature(r.feat, op.sym, op.rot);
+        } else if (op.op === "SOUNDG" && this.showSoundings) {
+          if (this.declutter && r.cellCscl !== Infinity && r.feat._bbox) {
+            const cx = (r.feat._bbox[0] + r.feat._bbox[2]) / 2;
+            const cy = (r.feat._bbox[1] + r.feat._bbox[3]) / 2;
+            const best = this._bestCsclAt(cx, cy);
+            if (best !== Infinity && r.cellCscl > best * CSCL_TOL) continue;
+          }
+          this._soundings(r.feat);
+        } else if (op.op === "TX" && this.showText) {
+          this._text(r.feat, op);
+        }
       }
     }
 
@@ -603,6 +689,38 @@ class Renderer {
     ctx.restore();
   }
 
+  /**
+   * 화면 안에 들어오는 셀들의 (Mercator) 경계와 CSCL을 모아, 임의 위치 (mx, my)
+   * 에서의 **가장 상세한(=가장 작은) CSCL** 을 즉시 돌려주는 클로저를 만든다.
+   * 더 상세한 셀이 같은 위치를 덮으면 개략 셀의 점 심볼·사운딩을 생략하는
+   * OpenCPN 거동을 구현하기 위한 인덱스.
+   */
+  _buildCsclLookup(denom, winMinX, winMaxX, winMinY, winMaxY) {
+    const cells = [];
+    for (const cell of this.cells.values()) {
+      if (!cell.visible || !cell.loaded) continue;
+      const b = cell.bounds;
+      const cscl = b && b.cscl;
+      if (!cscl || b.maxX === undefined) continue;
+      if (this.scaleDisplay && denom > cscl * this.scaleOutFactor) continue;
+      // lon/lat → mercator (b.minY/maxY는 도 단위)
+      const mxMin = b.minX * Math.PI / 180;
+      const mxMax = b.maxX * Math.PI / 180;
+      const myMin = Math.log(Math.tan(Math.PI / 4 + b.minY * Math.PI / 360));
+      const myMax = Math.log(Math.tan(Math.PI / 4 + b.maxY * Math.PI / 360));
+      if (mxMax < winMinX || mxMin > winMaxX || myMax < winMinY || myMin > winMaxY) continue;
+      cells.push({ cscl, mxMin, mxMax, myMin, myMax });
+    }
+    return (mx, my) => {
+      let best = Infinity;
+      for (const c of cells) {
+        if (mx < c.mxMin || mx > c.mxMax || my < c.myMin || my > c.myMax) continue;
+        if (c.cscl < best) best = c.cscl;
+      }
+      return best;
+    };
+  }
+
   _strokePolys(rings, op) {
     const ctx = this.ctx;
     this._applyStroke(op);
@@ -645,50 +763,19 @@ class Renderer {
   _symbolFeature(feat, symName, rot) {
     const a = feat._pg && feat._pg.anchor;
     if (!a) return;
-    // ── 다중 축척 셀 중첩 심볼 제거 ──
-    // 동일 심볼이 화면상 PT_DEDUP_PX 이내에 이미 그려졌으면 건너뛴다.
-    // 서로 다른 축척의 ENC 셀이 같은 항행보조시설(부이·등대·비컨 등)을 중복
-    // 수록할 때, 좌표 정밀도 차이로 ~수 픽셀 어긋나 박히는 잔상까지 잡는다.
-    {
-      const PT_DEDUP_PX = 8;
+    if (this.declutter) {
       const sx = this.vp.sx(a[0]), sy = this.vp.sy(a[1]);
-      const min2 = PT_DEDUP_PX * PT_DEDUP_PX;
-      const bx = Math.floor(sx / PT_DEDUP_PX), by = Math.floor(sy / PT_DEDUP_PX);
-      for (let dy = -1; dy <= 1; dy++) {
-        for (let dx = -1; dx <= 1; dx++) {
-          const arr = this._pointSymbolGrid.get(`${symName}|${bx + dx},${by + dy}`);
-          if (!arr) continue;
-          for (let i = 0; i < arr.length; i += 2) {
-            const ddx = sx - arr[i], ddy = sy - arr[i + 1];
-            if (ddx * ddx + ddy * ddy < min2) return;
-          }
-        }
+      // (1) 항행보조 시설: 다중 축척 셀이 같은 부이/등화를 중복 수록할 때 잔상 제거
+      const navGroup = navaidGroupKey(feat);
+      if (navGroup &&
+          spatialDedup(this._pointSymbolGrid, navGroup, sx, sy, NAVAID_DEDUP_PX, NAVAID_DEDUP_PX)) {
+        return;
       }
-      const key = `${symName}|${bx},${by}`;
-      let arr = this._pointSymbolGrid.get(key);
-      if (!arr) { arr = []; this._pointSymbolGrid.set(key, arr); }
-      arr.push(sx, sy);
-    }
-    if (this.declutter && FLOW_ARROW_SYMBOL_RE.test(symName || "")) {
-      const x = this.vp.sx(a[0]), y = this.vp.sy(a[1]);
-      const g = FLOW_ARROW_MIN_DIST_PX;
-      const min2 = g * g;
-      const bx = Math.floor(x / g), by = Math.floor(y / g);
-      // 3×3 이웃 버킷까지 검사해 격자 경계에서 흔들리는 (∼1 px) 중복도 묶는다.
-      for (let dy = -1; dy <= 1; dy++) {
-        for (let dx = -1; dx <= 1; dx++) {
-          const arr = this._flowArrowGrid.get(`${bx + dx},${by + dy}`);
-          if (!arr) continue;
-          for (let i = 0; i < arr.length; i += 2) {
-            const ddx = x - arr[i], ddy = y - arr[i + 1];
-            if (ddx * ddx + ddy * ddy < min2) return;
-          }
-        }
+      // (2) TSS·항로·조류 등 방향 화살표: 줄지어 박힌 화살표를 듬성하게
+      if (FLOW_ARROW_SYMBOL_RE.test(symName || "") &&
+          spatialDedup(this._flowArrowGrid, "", sx, sy, FLOW_ARROW_MIN_DIST_PX, FLOW_ARROW_MIN_DIST_PX)) {
+        return;
       }
-      const key = `${bx},${by}`;
-      let arr = this._flowArrowGrid.get(key);
-      if (!arr) { arr = []; this._flowArrowGrid.set(key, arr); }
-      arr.push(x, y);
     }
     this._blit(symName, a[0], a[1], rot);
   }
@@ -720,16 +807,18 @@ class Renderer {
     const ps = feat._ps;
     if (!ps) return;
     const ctx = this.ctx, vp = this.vp;
+    const fpx = this._soundingFontPx || 10;
+    const charW = fpx * 0.6;
     ctx.fillStyle = this.s52.color("SNDG2");
-    ctx.font = "10px sans-serif";
+    ctx.font = `${fpx}px sans-serif`;
     ctx.textAlign = "center";
     for (let i = 0; i < ps.length; i += 3) { // flat [x,y,depth,…]
       const x = vp.sx(ps[i]), y = vp.sy(ps[i + 1]);
       if (x < -20 || y < -20 || x > this.canvas.width + 20 || y > this.canvas.height + 20) continue;
       const label = soundingLabel(ps[i + 2], this.depthUnit); // metres
-      const w = label.length * 6;
-      if (!this._place(x - w / 2, y - 5, w, 11)) continue;
-      ctx.fillText(label, x, y + 3);
+      const w = label.length * charW;
+      if (!this._place(x - w / 2, y - fpx / 2, w, fpx + 1)) continue;
+      ctx.fillText(label, x, y + fpx * 0.3);
     }
   }
 
@@ -737,11 +826,13 @@ class Renderer {
     const a = feat._pg && feat._pg.anchor;
     if (!a) return;
     const x = this.vp.sx(a[0]), y = this.vp.sy(a[1]);
-    const w = op.text.length * 6 + 4;
-    if (!this._place(x + 4, y - 15, w, 13)) return;
+    const fpx = this._labelFontPx || 11;
+    const charW = fpx * 0.55;
+    const w = op.text.length * charW + 4;
+    if (!this._place(x + 4, y - fpx - 4, w, fpx + 2)) return;
     const ctx = this.ctx;
     ctx.fillStyle = op.color;
-    ctx.font = "11px sans-serif";
+    ctx.font = `${fpx}px sans-serif`;
     ctx.textAlign = "left";
     ctx.fillText(op.text, x + 4, y - 4);
   }

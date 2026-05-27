@@ -27,7 +27,12 @@
       "Bash(node --check js/iso8211.js)",
       "Bash(git --no-pager diff --stat HEAD)",
       "Bash(git --no-pager diff HEAD -- js/render.js index.html)",
-      "Bash(git --no-pager diff HEAD -- js/main.js)"
+      "Bash(git --no-pager diff HEAD -- js/main.js)",
+      "Bash(node -c js/render.js)",
+      "Bash(node -c js/main.js)",
+      "Bash(node --input-type=module -e \"import\\('./js/render.js'\\).then\\(\\(\\)=>console.log\\('render OK'\\),e=>{console.error\\('render',e.message\\);process.exit\\(1\\)}\\)\")",
+      "Bash(node --input-type=module -e \"import\\('./js/main.js'\\).then\\(\\(\\)=>console.log\\('main OK'\\),e=>{console.error\\('main',e.message\\);process.exit\\(1\\)}\\)\")",
+      "Bash(npm test *)"
     ]
   }
 }

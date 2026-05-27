@@ -1,8 +1,8 @@
 import { DDF } from "./iso8211.js";
 import { S57 } from "./s57.js";
-import { S52 } from "./s52.js";
+import { S52 } from "./s52.js?v=3";
 import { loadCatalog } from "./catalog.js";
-import { Renderer } from "./render.js?v=23";
+import { Renderer } from "./render.js?v=26";
 
 const ATLAS_BY_TABLE = {
   DAY_BRIGHT: "assets/rastersymbols-day.png",
@@ -221,6 +221,14 @@ async function init() {
   } else {
     setStatus(`준비 완료 — 셀 ${idx.length}개. 기본 뷰에서 겹치는 셀을 곧 불러옵니다…`);
   }
+
+  const gridCb = document.getElementById("grid");
+  if (gridCb) {
+    state.renderer.showGrid = gridCb.checked;
+    if (gridCb.checked) state.renderer.invalidateEncBoundaryResIfStale();
+  }
+  const graticuleCb = document.getElementById("graticule");
+  if (graticuleCb) state.renderer.showGraticule = graticuleCb.checked;
 }
 
 function globalBoundsOf(idx) {
@@ -1063,6 +1071,10 @@ document.getElementById("sidebarVisible").addEventListener("change", (e) => {
 });
 
 // ---- pan & zoom + click-to-toggle a cell on the grid ----
+const WHEEL_ZOOM_FACTOR = 1.35;
+const ZOOM_KEY_FACTOR = 1.15;
+const PAN_STEP_PX = 64;
+
 let dragging = false, moved = false, startX = 0, startY = 0, lastX = 0, lastY = 0;
 canvas.addEventListener("mousedown", (e) => {
   dragging = true; moved = false;
@@ -1089,13 +1101,10 @@ window.addEventListener("mousemove", (e) => {
 });
 canvas.addEventListener("wheel", (e) => {
   e.preventDefault();
-  state.renderer.vp.scale *= e.deltaY < 0 ? 1.15 : 1 / 1.15;
+  state.renderer.vp.scale *= e.deltaY < 0 ? WHEEL_ZOOM_FACTOR : 1 / WHEEL_ZOOM_FACTOR;
   draw();
   if (isMobileLayout()) scheduleMobileViewportSync();
 }, { passive: false });
-
-const ZOOM_KEY_FACTOR = 1.15;
-const PAN_STEP_PX = 64;
 
 /** 문자 입력 중인 폼 요소에만 포커스가 있을 때 맵 단축키 무시 (파일·체크박스 등은 제외) */
 function keyboardTargetIgnoresMapKeys(el) {

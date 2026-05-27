@@ -237,8 +237,8 @@ class S52 {
       ops.push({ op: "SY", sym: "DANGER01" }); return;
     }
     if (proc.startsWith("DATCVR")) {
-      // ENC coverage / data-extent outline (M_COVR, M_CSCL 등)
-      ops.push({ op: "LS", style: "SOLD", width: 1.25, color: this.color("CHBLK") });
+      // M_COVR/M_CSCL 외곽: S-52 PL은 CHBLK 선을 내지만, 본 뷰어는 render.js에서
+      // 셀 격자·인덱스로만 표현하고 벡터 윤곽은 그리지 않는다(검정 격자선 누수 방지).
       return;
     }
     if (proc.startsWith("RESARE")) {

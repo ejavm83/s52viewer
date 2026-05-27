@@ -15,6 +15,7 @@
   #toolbar label { font-size: 13px; display: flex; align-items: center; gap: 4px; }
   #toolbar h1 { font-size: 15px; margin: 0 8px 0 0; font-weight: 600; }
   #focused-cell {
+    display: none;
     font-size: 14px; font-weight: 700; letter-spacing: 0.02em;
     color: #fff; background: #2980b9; padding: 4px 10px; border-radius: 4px;
     border: 1px solid #5dade2; box-shadow: 0 0 0 1px rgba(0,0,0,.2) inset;
@@ -206,7 +207,7 @@
   }
 </style>
 </head>
-<body>
+<body class="sidebar-collapsed">
   <div id="toolbar">
     <h1>S-52 ENC Viewer</h1>
     <a href="about.html" class="doc-page">프로그램 설명</a>
@@ -252,7 +253,7 @@
     <label><input type="checkbox" id="sound" checked /> 수심</label>
     <label><input type="checkbox" id="scamin" checked /> 축척억제</label>
     <label title="수심·텍스트 겹침 완화 및 교통·조류 방향 화살표 중복 제거(같은 화면 격자당 1개)"><input type="checkbox" id="declutter" checked /> 겹침제거</label>
-    <label><input type="checkbox" id="sidebarVisible" checked /> 셀 목록(좌측)</label>
+    <label><input type="checkbox" id="sidebarVisible" /> 셀 목록(좌측)</label>
   </div>
   <div id="main">
     <div id="sidebar">
@@ -298,9 +299,9 @@
     <div id="status">초기화 중…</div>
     <h1 class="mobile-app-title">S-52 ENC Viewer</h1>
     <a href="about.html" class="doc-page doc-page-mobile">프로그램 설명</a>
-    <div id="app-credit">제작: 지엠티 김길용 수석 · v0.1.0 (2026.05.27)</div>
+    <div id="app-credit">제작: 지엠티 김길용 수석 · v0.1.1 (2026.05.27)</div>
   </div>
   <div id="map-loading" hidden>로딩 중…</div>
-  <script type="module" src="js/main.js?v=31"></script>
+  <script type="module" src="js/main.js?v=34"></script>
 </body>
 </html>

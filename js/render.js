@@ -92,8 +92,42 @@ function spatialDedup(grid, prefix, x, y, g, min) {
 
 /** S-57 메타 경계(M_COVR·M_CSCL) — UI 격자와 함께 켜고 끔. 표시범주 Other라 Standard에서도 격자 ON이면 허용 */
 const ENC_BOUNDARY_WITH_GRID = new Set(["M_COVR", "M_CSCL"]);
+/**
+ * ENC 셀 메타 경계(M_COVR·M_CSCL) — 카탈로그 미매칭(`OBJ302`/`OBJ301`),
+ * OBJL 타입 불일치(문자열 "302"), 또는 약어만 비정상일 때도 식별해
+ * DATCVR(CHBLK) 윤곽이 선 패스로 새는 것을 막는다.
+ */
+function isEncBoundaryFeat(feat) {
+  if (!feat) return false;
+  const ac = String(feat.acronym || "").trim().toUpperCase();
+  if (ENC_BOUNDARY_WITH_GRID.has(ac)) return true;
+  const objM = /^OBJ(\d+)$/.exec(ac);
+  if (objM) {
+    const code = parseInt(objM[1], 10);
+    if (code === 301 || code === 302) return true;
+  }
+  const o = feat.objl;
+  const n = typeof o === "number" && Number.isFinite(o) ? o : parseInt(String(o), 10);
+  if (n === 301 || n === 302) return true;
+  const attrs = feat.attrs;
+  if (attrs && Object.prototype.hasOwnProperty.call(attrs, "CATCOV")) return true;
+  return false;
+}
 
-// Web Mercator. Both axes must share the same units (radians) or the aspect
+/**
+ * M_NSYS(306): chartsymbols.xml 일부 룩업이 `LC(MARSYS51)`을 CHBLK 실선 LS로 근사한다.
+ * 다수 ENC를 동시에 켜면 셀마다 큰 직사각형이 겹쳐 "검정 격자"처럼 보이므로 CHBLK LS만 끈다.
+ * (CHYLW·CHGRD 등 다른 M_NSYS 선은 그대로 유지)
+ */
+function isMnsysFeat(feat) {
+  if (!feat) return false;
+  const ac = String(feat.acronym || "").trim().toUpperCase();
+  if (ac === "M_NSYS") return true;
+  if (/^OBJ306$/i.test(ac)) return true;
+  const o = feat.objl;
+  const n = typeof o === "number" && Number.isFinite(o) ? o : parseInt(String(o), 10);
+  return n === 306;
+}
 // ratio is wrong, so X is longitude in radians — not degrees.
 function mercX(lonDeg) {
   return (lonDeg * Math.PI) / 180;
@@ -183,7 +217,7 @@ class Renderer {
     for (const cell of this.cells.values()) {
       if (!cell.features) continue;
       for (const feat of cell.features) {
-        if (!ENC_BOUNDARY_WITH_GRID.has(feat.acronym)) continue;
+        if (!isEncBoundaryFeat(feat)) continue;
         const ops = feat._res && feat._res.ops;
         if (!ops || !ops.length) {
           feat._resTable = undefined;
@@ -306,7 +340,7 @@ class Renderer {
       for (const feat of cell.features) {
         if (!feat.geom && !feat.soundings) continue;
         if (this.hiddenClasses.has(feat.acronym)) continue; // per-object-class toggle
-        if (!this.showGrid && ENC_BOUNDARY_WITH_GRID.has(feat.acronym)) continue;
+        if (!this.showGrid && isEncBoundaryFeat(feat)) continue;
         if (this.respectScamin) {
           const sc = parseFloat(feat.attrs.SCAMIN);
           if (!Number.isNaN(sc) && denom > sc) continue;
@@ -319,7 +353,7 @@ class Renderer {
         }
         const res = feat._res;
         const encBoundaryWithGrid =
-          this.showGrid && ENC_BOUNDARY_WITH_GRID.has(feat.acronym);
+          this.showGrid && isEncBoundaryFeat(feat);
         if (!feat.soundings && !this.catAllowed(res.displayCat) && !encBoundaryWithGrid) continue;
         this._prep(feat);
         const b = feat._bbox;
@@ -347,7 +381,7 @@ class Renderer {
 
     // pass 1: area fills
     for (const r of resolved) {
-      if (ENC_BOUNDARY_WITH_GRID.has(r.feat.acronym)) continue; // M_COVR/M_CSCL: 그리드 오버레이가 대신 표현
+      if (isEncBoundaryFeat(r.feat)) continue; // M_COVR/M_CSCL: 그리드 오버레이가 대신 표현
       const pg = r.feat._pg;
       if (!pg || pg.type !== "Area") continue;
       for (const op of r.ops) {
@@ -359,12 +393,14 @@ class Renderer {
     // pass 2: lines — batched by style so thousands of features stroke in a
     // handful of draw calls instead of one beginPath/stroke each.
     const lineGroups = new Map(); // "color|width|style" -> {op, rings:[...]}
+    const chblkRgb = this.s52.color("CHBLK");
     for (const r of resolved) {
-      if (ENC_BOUNDARY_WITH_GRID.has(r.feat.acronym)) continue; // M_COVR/M_CSCL: 검정 윤곽 제거
+      if (isEncBoundaryFeat(r.feat)) continue; // M_COVR/M_CSCL: 검정 윤곽 제거
       const pg = r.feat._pg;
       if (!pg || pg.type === "Point") continue;
       for (const op of r.ops) {
         if (op.op !== "LS") continue;
+        if (isMnsysFeat(r.feat) && op.color === chblkRgb) continue;
         const key = op.color + "|" + (op.width || 1) + "|" + (op.style || "");
         let grp = lineGroups.get(key);
         if (!grp) { grp = { op, rings: [] }; lineGroups.set(key, grp); }

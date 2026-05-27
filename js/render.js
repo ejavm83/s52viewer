@@ -176,11 +176,24 @@ class Viewport {
   // ── 3D 지구본 모드 헬퍼 ──
 
   /**
-   * 현재 화면 폭에 세계 둘레가 1 바퀴 이상 들어오면 globe로 자동 전환되도록 한 임계 scale.
-   * 머케이터 X 단위는 라디안이므로 화면 폭에 2π가 들어맞는 시점이 기준.
+   * 원근 투영의 카메라 초점 거리(px). 구체 표면에서 각도 1 rad가 화면 중심에서
+   * 차지하는 픽셀이 곧 scale이 되도록 D = 1 + f/scale 로 카메라 거리를 정한다.
+   * f가 곧 90° FoV 기준의 픽셀 폭.
+   */
+  globeFocalLength() {
+    return Math.min(this.canvas.width, this.canvas.height) * 0.5;
+  }
+  /** 원근 카메라의 구체 중심으로부터의 거리(단위 = 구체 반지름). 1이면 표면에 접함, ∞면 직교투영. */
+  globeCameraDistance() {
+    return 1 + this.globeFocalLength() / Math.max(1, this.scale);
+  }
+  /**
+   * D가 1에 가까워지면(=카메라가 표면에 매우 가까워지면) 보이는 패치가 거의 평면.
+   * 그 시점에서 머케이터로 전환하면 같은 위치·축척의 패치가 그대로 이어져 시각적 점프가 사라진다.
+   * D=1.1 ↔ scale = f*10.
    */
   globeThresholdScale() {
-    return this.canvas.width / (2 * Math.PI) * 1.05;
+    return this.globeFocalLength() * 10;
   }
   /** 현재 표시 모드가 globe인지(명시 모드 우선, 자동 모드면 scale 기준) */
   isGlobeView() {
@@ -205,38 +218,58 @@ class Viewport {
     this.cy = mercY(this._globeLat * 180 / Math.PI);
     this.mode = "mercator";
   }
-  /** globe 반지름(픽셀). scale을 단일 변수로 쓰기 위해 scale을 그대로 반지름으로 사용. */
+  /**
+   * 화면에 보이는 구체의 외관상 반지름(px). 원근 투영에서는 카메라가 가까울수록 커진다.
+   * 식: r_screen = f / sqrt(D² - 1) (구체 림이 카메라에서 보이는 각의 사인이 1/D 인 데서 유도).
+   */
   globeRadius() {
-    return Math.max(20, this.scale);
+    const f = this.globeFocalLength();
+    const D = this.globeCameraDistance();
+    const d2 = D * D - 1;
+    return f / Math.sqrt(Math.max(1e-6, d2));
   }
   /**
-   * 직교투영(globe 표면 위의 점 → 화면 픽셀).
-   * 반환 {x, y, visible}. visible=false이면 지구 뒤편(그리지 않음).
+   * 구체 표면 위의 (lon, lat) → 화면 픽셀. **원근 투영**.
+   * 카메라가 (0,0,D) 에서 구체 중심을 바라보고, 표면 위 점을 1점 초점 사영으로 옮긴다.
+   * - 매우 큰 D(축소): 직교투영(orthographic) 과 동일 외관 — 지구본 전체가 작게 보임.
+   * - D가 1로 갈수록(확대): 카메라가 표면에 접근, 보이는 패치가 평면에 가까워짐 →
+   *   머케이터로 끊김 없이 전환되는 경계.
+   * 가시 판정: 회전 좌표계의 z (=시선 방향) 가 1/D 보다 커야 함(구체에 가려지지 않음).
    */
-  projOrtho(lonRad, latRad) {
-    const cLon = this.cx; // mercX(lon)은 lonRad와 동일 단위
+  projPerspective(lonRad, latRad) {
+    const cLon = this.cx;
     const cLat = this._globeLat;
+    const f = this.globeFocalLength();
+    const D = this.globeCameraDistance();
     const cosLat = Math.cos(latRad), sinLat = Math.sin(latRad);
     const cosCLat = Math.cos(cLat), sinCLat = Math.sin(cLat);
     const dLon = lonRad - cLon;
     const cosDLon = Math.cos(dLon), sinDLon = Math.sin(dLon);
-    const cosC = sinCLat * sinLat + cosCLat * cosLat * cosDLon;
+    // 시선축 기준 회전된 좌표(unit sphere)
+    const xv = cosLat * sinDLon;
+    const yv = cosCLat * sinLat - sinCLat * cosLat * cosDLon;
+    const zv = sinCLat * sinLat + cosCLat * cosLat * cosDLon;
+    const cx = this.canvas.width / 2, cy = this.canvas.height / 2;
+    if (zv > 1 / D) {
+      const denom = D - zv;
+      return { x: cx + xv * f / denom, y: cy - yv * f / denom, visible: true };
+    }
+    // 뒷면 — 림(외관상 반지름)으로 안정적 사영(폴리곤 경로가 끊기지 않게)
+    const mag = Math.hypot(xv, yv) || 1e-9;
     const r = this.globeRadius();
-    const x = r * cosLat * sinDLon;
-    const y = r * (cosCLat * sinLat - sinCLat * cosLat * cosDLon);
-    return {
-      x: this.canvas.width / 2 + x,
-      y: this.canvas.height / 2 - y,
-      visible: cosC > 0,
-    };
+    return { x: cx + xv / mag * r, y: cy - yv / mag * r, visible: false };
   }
-  /** globe 모드에서 마우스 회전. dx, dy는 픽셀 변위. */
+  /** 구버전 이름 호환(globe 렌더링 코드가 이 이름을 호출) */
+  projOrtho(lonRad, latRad) { return this.projPerspective(lonRad, latRad); }
+  /**
+   * globe 모드에서 마우스 회전. dx, dy 는 픽셀 변위.
+   * 원근 투영의 화면 중심 픽셀당 각도는 1/scale 라디안 (정의상)이므로 그대로 1:1 변환.
+   */
   rotateGlobeByPixels(dx, dy) {
-    const r = this.globeRadius();
-    // 픽셀 → 라디안: 단순화하여 scale 기준 1:1
-    this.cx -= dx / r;
+    const s = Math.max(1, this.scale);
+    this.cx -= dx / s;
     this._globeLat = Math.max(-Math.PI / 2 + 0.01,
-                     Math.min(Math.PI / 2 - 0.01, this._globeLat + dy / r));
+                     Math.min(Math.PI / 2 - 0.01, this._globeLat + dy / s));
   }
   // Representative display-scale denominator (1:N) for SCAMIN comparison.
   scaleDenominator() {
@@ -387,6 +420,11 @@ class Renderer {
     const w = this.canvas.width, h = this.canvas.height;
     ctx.fillStyle = this.s52.color("DEPDW");
     ctx.fillRect(0, 0, w, h);
+
+    // 세계 대륙·국경 — globe 모드와 시각적으로 끊김 없는 전환을 위해 머케이터에서도 그린다.
+    // ENC 면 채움(패스 1)이 이 위를 덮으므로 ENC 영역에는 보이지 않고, 빈 영역(원양·해외)에만 노출됨.
+    this._drawMercatorWorldLand();
+    this._drawMercatorCountries();
 
     this._labelBoxes = [];
     /** 통항·조류 방향 화살표 디클러터: 버킷(28 px 격자) → 해당 버킷에 배치된 점들의 [x,y,...] */
@@ -551,34 +589,46 @@ class Renderer {
     const cx = w / 2, cy = h / 2;
     const R = vp.globeRadius();
 
+    // 비동기 대륙 데이터 — 처음 호출 시 받기 시작하고, 도착하면 onWorldLandReady로 재렌더링.
+    this._ensureWorldLand();
+
     // 별이 박힌 검정 배경
     ctx.fillStyle = "#05080d";
     ctx.fillRect(0, 0, w, h);
     this._drawStars();
 
-    // 구체 외곽 — 살짝 밝은 푸른 림
-    ctx.save();
-    ctx.beginPath();
-    ctx.arc(cx, cy, R + 1.5, 0, Math.PI * 2);
-    ctx.strokeStyle = "rgba(120,180,240,0.55)";
-    ctx.lineWidth = 3;
-    ctx.stroke();
+    // 대기 글로우 — 구체 림 바깥쪽에 부드러운 푸른 빛
+    const glow = ctx.createRadialGradient(cx, cy, R * 0.98, cx, cy, R * 1.18);
+    glow.addColorStop(0, "rgba(120, 180, 240, 0.55)");
+    glow.addColorStop(0.5, "rgba(70, 130, 200, 0.25)");
+    glow.addColorStop(1, "rgba(20, 50, 100, 0)");
+    ctx.fillStyle = glow;
+    ctx.beginPath(); ctx.arc(cx, cy, R * 1.18, 0, Math.PI * 2); ctx.fill();
 
-    // 구체 디스크(바다색)
-    ctx.beginPath();
-    ctx.arc(cx, cy, R, 0, Math.PI * 2);
-    ctx.fillStyle = this.s52.color("DEPDW");
-    ctx.fill();
+    // 구체 디스크 — 약간의 음영(왼쪽 위 밝게)
+    const ocean = ctx.createRadialGradient(
+      cx - R * 0.35, cy - R * 0.4, R * 0.1,
+      cx, cy, R
+    );
+    ocean.addColorStop(0, "#3a6fa8");
+    ocean.addColorStop(0.6, "#1f4d80");
+    ocean.addColorStop(1, "#0e2a4d");
+    ctx.fillStyle = ocean;
+    ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.fill();
 
     // 클리핑 — 이 시점부터 구체 안쪽만 그리기
+    ctx.save();
     ctx.beginPath();
     ctx.arc(cx, cy, R, 0, Math.PI * 2);
     ctx.clip();
 
-    // 위·경도 그리드
+    // 대륙
+    this._drawGlobeLand();
+    // 국경(옅게)
+    this._drawGlobeCountries();
+    // 위·경도 그리드(대륙 위에 옅게)
     this._drawGlobeGraticule();
-
-    // 로드된 ENC 셀의 경계 사각형 — 한국 ENC라면 한반도 근해에 몰림
+    // 로드된 ENC 셀의 경계 사각형(그 위에)
     this._drawGlobeCells();
 
     ctx.restore();
@@ -592,6 +642,245 @@ class Renderer {
     ctx.stroke();
 
     this.lastStats = { drawn: this.cells.size, culled: 0, denom: Math.round(vp.scaleDenominator()) };
+  }
+
+  /**
+   * 세계 육지·국경 GeoJSON(Natural Earth 110m)을 한 번만 로드.
+   * `assets/ne_110m_land.geojson` (대륙 면, 127 폴리곤)
+   * `assets/ne_110m_countries.geojson` (국가 경계, 177 폴리곤) — 옅은 윤곽 표시용.
+   * 로드 완료 시 onWorldLandReady() 콜백으로 재렌더링 신호.
+   */
+  _ensureWorldLand() {
+    if (this._worldLand === undefined && !this._worldLandLoading) {
+      this._worldLandLoading = true;
+      (async () => {
+        try {
+          const r = await fetch("assets/ne_110m_land.geojson", { cache: "force-cache" });
+          if (r.ok) {
+            const j = await r.json();
+            this._worldLand = this._normalizeWorldLand(j);
+            if (typeof this.onWorldLandReady === "function") this.onWorldLandReady();
+            return;
+          }
+        } catch (_e) { /* fall through */ }
+        this._worldLand = null;
+      })();
+    }
+    if (this._worldCountries === undefined && !this._worldCountriesLoading) {
+      this._worldCountriesLoading = true;
+      (async () => {
+        try {
+          const r = await fetch("assets/ne_110m_countries.geojson", { cache: "force-cache" });
+          if (r.ok) {
+            const j = await r.json();
+            this._worldCountries = this._normalizeWorldLand(j);
+            if (typeof this.onWorldLandReady === "function") this.onWorldLandReady();
+            return;
+          }
+        } catch (_e) { /* fall through */ }
+        this._worldCountries = null;
+      })();
+    }
+  }
+
+  /** GeoJSON FeatureCollection을 폴리곤 리스트로 평탄화: [[ ring, ... ], ...] */
+  _normalizeWorldLand(geojson) {
+    const polys = [];
+    for (const f of geojson.features || []) {
+      const g = f.geometry;
+      if (!g) continue;
+      if (g.type === "Polygon") polys.push(g.coordinates);
+      else if (g.type === "MultiPolygon") {
+        for (const p of g.coordinates) polys.push(p);
+      }
+    }
+    return polys;
+  }
+
+  /**
+   * 머케이터 좌표로 미리 사영한 대륙 폴리곤 캐시(한 번만 계산).
+   * 머케이터 위·아래 발산을 막기 위해 위도를 ±85°로 클립.
+   * 결과 형태: [[Float64Array(x,y,...), ...], ...]
+   * (주의: 첫 호출 시 데이터가 아직 비동기 로드 중이면 캐시를 채우지 않고 반환 —
+   * 다음 프레임에 다시 시도해 데이터가 도착하면 그때 계산됨)
+   */
+  _prepWorldLandMerc() {
+    if (this._worldLandMerc) return;   // 이미 준비됨
+    if (!this._worldLand) return;      // 아직 로딩 중 — 다음 프레임에 다시
+    const out = [];
+    for (const rings of this._worldLand) {
+      const r2 = [];
+      for (const ring of rings) {
+        const n = ring.length;
+        const flat = new Float64Array(n * 2);
+        for (let i = 0; i < n; i++) {
+          const lon = ring[i][0];
+          const lat = Math.max(-85, Math.min(85, ring[i][1]));
+          flat[i * 2] = mercX(lon);
+          flat[i * 2 + 1] = mercY(lat);
+        }
+        r2.push(flat);
+      }
+      out.push(r2);
+    }
+    this._worldLandMerc = out;
+  }
+
+  /**
+   * 머케이터 평면 모드에서 세계 대륙을 그린다.
+   * 우선 ENC 영역 색이 위를 덮으므로 ENC가 있는 곳에는 보이지 않고, 빈 바다·해외에만 노출됨.
+   * 매 프레임 사영은 캐시된 머케이터 좌표에 vp.sx/sy 선형 변환만 적용해 빠르다.
+   */
+  /** 국가 경계도 머케이터 좌표로 캐시(처음 한 번). */
+  _prepWorldCountriesMerc() {
+    if (this._worldCountriesMerc) return;
+    if (!this._worldCountries) return;
+    const out = [];
+    for (const rings of this._worldCountries) {
+      const r2 = [];
+      for (const ring of rings) {
+        const n = ring.length;
+        const flat = new Float64Array(n * 2);
+        for (let i = 0; i < n; i++) {
+          const lon = ring[i][0];
+          const lat = Math.max(-85, Math.min(85, ring[i][1]));
+          flat[i * 2] = mercX(lon);
+          flat[i * 2 + 1] = mercY(lat);
+        }
+        r2.push(flat);
+      }
+      out.push(r2);
+    }
+    this._worldCountriesMerc = out;
+  }
+
+  /** 머케이터에서 국경 라인만 옅게(외곽 윤곽 강조용) */
+  _drawMercatorCountries() {
+    this._prepWorldCountriesMerc();
+    const polys = this._worldCountriesMerc;
+    if (!polys || !polys.length) return;
+    const ctx = this.ctx, vp = this.vp;
+    const w = this.canvas.width, h = this.canvas.height;
+    const margin = 40;
+    ctx.strokeStyle = "rgba(80,60,30,0.45)";
+    ctx.lineWidth = 0.5;
+    for (const rings of polys) {
+      const outer = rings[0];
+      if (!outer || outer.length < 4) continue;
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (let i = 0; i < outer.length; i += 2) {
+        const x = vp.sx(outer[i]), y = vp.sy(outer[i + 1]);
+        if (x < minX) minX = x; if (x > maxX) maxX = x;
+        if (y < minY) minY = y; if (y > maxY) maxY = y;
+      }
+      if (maxX < -margin || minX > w + margin || maxY < -margin || minY > h + margin) continue;
+      ctx.beginPath();
+      for (const flat of rings) {
+        const n = flat.length;
+        if (n < 4) continue;
+        ctx.moveTo(vp.sx(flat[0]), vp.sy(flat[1]));
+        for (let i = 2; i < n; i += 2) {
+          ctx.lineTo(vp.sx(flat[i]), vp.sy(flat[i + 1]));
+        }
+        ctx.closePath();
+      }
+      ctx.stroke();
+    }
+  }
+
+  _drawMercatorWorldLand() {
+    this._ensureWorldLand();
+    this._prepWorldLandMerc();
+    const polys = this._worldLandMerc;
+    if (!polys || !polys.length) return;
+    const ctx = this.ctx, vp = this.vp;
+    // S-52 LANDA(육지 배경) 톤이 있으면 그것에 맞춰 일관성을 주고, 없으면 사막 톤.
+    const landFill = this.s52.color("LANDA") !== "#ff00ff"
+      ? this.s52.color("LANDA")
+      : "#dfd0a8";
+    ctx.fillStyle = landFill;
+    ctx.strokeStyle = "rgba(80,60,30,0.4)";
+    ctx.lineWidth = 0.6;
+    // 화면 밖 폴리곤 컬링용 화면 좌표 한계
+    const w = this.canvas.width, h = this.canvas.height;
+    const margin = 40;
+    for (const rings of polys) {
+      // 외곽 링(첫 링)으로 화면 밖이면 통째 스킵
+      const outer = rings[0];
+      if (!outer || outer.length < 4) continue;
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      // 외곽 링 모든 정점을 한 번 사영해 bbox 계산(폴리곤 수가 적어 부담 적음)
+      for (let i = 0; i < outer.length; i += 2) {
+        const x = vp.sx(outer[i]), y = vp.sy(outer[i + 1]);
+        if (x < minX) minX = x; if (x > maxX) maxX = x;
+        if (y < minY) minY = y; if (y > maxY) maxY = y;
+      }
+      if (maxX < -margin || minX > w + margin || maxY < -margin || minY > h + margin) continue;
+
+      ctx.beginPath();
+      for (const flat of rings) {
+        const n = flat.length;
+        if (n < 4) continue;
+        ctx.moveTo(vp.sx(flat[0]), vp.sy(flat[1]));
+        for (let i = 2; i < n; i += 2) {
+          ctx.lineTo(vp.sx(flat[i]), vp.sy(flat[i + 1]));
+        }
+        ctx.closePath();
+      }
+      ctx.fill("evenodd");
+      ctx.stroke();
+    }
+  }
+
+  /**
+   * orthographic 투영으로 대륙 채우기. 지구 뒷면 정점은 림(R 반지름) 위로 사영해
+   * 경로가 끊기지 않게 한 뒤, 구체 디스크 클리핑에 맡겨 시각적으로 잘리게 한다.
+   */
+  _drawGlobeCountries() {
+    const polys = this._worldCountries;
+    if (!polys || !polys.length) return;
+    const ctx = this.ctx, vp = this.vp;
+    ctx.strokeStyle = "rgba(80,60,30,0.55)";
+    ctx.lineWidth = 0.6;
+    for (const rings of polys) {
+      ctx.beginPath();
+      for (const ring of rings) {
+        for (let i = 0; i < ring.length; i++) {
+          const c = ring[i];
+          const p = vp.projPerspective(c[0] * Math.PI / 180, c[1] * Math.PI / 180);
+          if (i === 0) ctx.moveTo(p.x, p.y);
+          else ctx.lineTo(p.x, p.y);
+        }
+        ctx.closePath();
+      }
+      ctx.stroke();
+    }
+  }
+
+  _drawGlobeLand() {
+    const polys = this._worldLand;
+    if (!polys || !polys.length) return;
+    const ctx = this.ctx, vp = this.vp;
+    const landFill = this.s52.color("LANDA") !== "#ff00ff"
+      ? this.s52.color("LANDA")
+      : "#dfd0a8";
+    ctx.fillStyle = landFill;            // 머케이터 모드와 동일 톤
+    ctx.strokeStyle = "rgba(80,60,30,0.5)";
+    ctx.lineWidth = 0.6;
+    for (const rings of polys) {
+      ctx.beginPath();
+      for (const ring of rings) {
+        for (let i = 0; i < ring.length; i++) {
+          const c = ring[i];
+          const p = vp.projPerspective(c[0] * Math.PI / 180, c[1] * Math.PI / 180);
+          if (i === 0) ctx.moveTo(p.x, p.y);
+          else ctx.lineTo(p.x, p.y);
+        }
+        ctx.closePath();
+      }
+      ctx.fill("evenodd");
+      ctx.stroke();
+    }
   }
 
   /** 결정론적 별 점들(중심·크기 고정으로 매 프레임 같은 패턴). */
@@ -611,7 +900,7 @@ class Renderer {
 
   _drawGlobeGraticule() {
     const ctx = this.ctx, vp = this.vp;
-    ctx.strokeStyle = "rgba(255,255,255,0.18)";
+    ctx.strokeStyle = "rgba(255,255,255,0.08)";
     ctx.lineWidth = 1;
     // 위도(가로) 15° 간격
     for (let latDeg = -75; latDeg <= 75; latDeg += 15) {
@@ -640,7 +929,7 @@ class Renderer {
       ctx.stroke();
     }
     // 적도·자오선 강조
-    ctx.strokeStyle = "rgba(255,255,255,0.32)";
+    ctx.strokeStyle = "rgba(255,255,255,0.18)";
     ctx.beginPath();
     let started = false;
     for (let lonDeg = -180; lonDeg <= 180; lonDeg += 4) {
@@ -659,8 +948,8 @@ class Renderer {
       const b = cell.bounds;
       if (!b || b.maxX === undefined) continue;
       const visible = cell.visible && cell.loaded;
-      ctx.fillStyle = visible ? "rgba(80,200,255,0.32)" : "rgba(255,255,255,0.08)";
-      ctx.strokeStyle = visible ? "rgba(120,220,255,0.85)" : "rgba(255,255,255,0.35)";
+      ctx.fillStyle = visible ? "rgba(255,200,60,0.32)" : "rgba(255,255,255,0.06)";
+      ctx.strokeStyle = visible ? "rgba(255,220,90,0.95)" : "rgba(255,255,255,0.35)";
       // 셀 외곽을 16분할해 경계가 곡선으로 보이도록
       const pts = [];
       const N = 4;

@@ -2,7 +2,7 @@ import { DDF } from "./iso8211.js";
 import { S57 } from "./s57.js";
 import { S52 } from "./s52.js?v=3";
 import { loadCatalog } from "./catalog.js";
-import { Renderer } from "./render.js?v=28";
+import { Renderer } from "./render.js?v=34";
 
 const ATLAS_BY_TABLE = {
   DAY_BRIGHT: "assets/rastersymbols-day.png",
@@ -194,6 +194,8 @@ async function init() {
   );
   state.atlas.DAY_BRIGHT = await loadImage(ATLAS_BY_TABLE.DAY_BRIGHT);
   state.renderer = new Renderer(canvas, state.s52, state.atlas.DAY_BRIGHT);
+  // 3D 지구본 대륙 데이터 비동기 로드 완료 시 자동 재렌더링
+  state.renderer.onWorldLandReady = () => { if (state.fitted) draw(); };
 
   setStatus("셀 커버리지 인덱스 로드 중…");
   let idxRes = await fetch("/cell-index.json", { cache: "no-store" });
@@ -1112,14 +1114,47 @@ window.addEventListener("mousemove", (e) => {
     if (moved) applyCellListFilter();
   }
 });
+// 부드러운 줌 — 휠 한 번에 폭 점프하지 않고 짧은 애니메이션으로 보간(구글어스 UX).
+let _zoomAnimTarget = null;
+let _zoomAnimRaf = 0;
+function smoothZoomTo(targetScale, focusX, focusY) {
+  const vp = state.renderer.vp;
+  _zoomAnimTarget = targetScale;
+  if (_zoomAnimRaf) return; // 이미 진행 중 — 목표만 갱신, 같은 루프에서 따라감
+  let lastT = performance.now();
+  const step = (now) => {
+    const dt = Math.min(64, now - lastT); lastT = now;
+    const cur = vp.scale;
+    const tgt = _zoomAnimTarget;
+    // 지수 보간: 한 프레임당 (tgt/cur)^k. k = 1 - exp(-dt/τ). τ ≈ 90ms로 부드럽게 따라감.
+    const k = 1 - Math.exp(-dt / 90);
+    const next = cur * Math.pow(tgt / cur, k);
+    // 마우스 포커스 픽셀이 가리키는 지점을 유지하며 확대(머케이터에서만)
+    if (!vp.isGlobeView()) vp.zoomAtScreen(focusX, focusY, next);
+    else vp.scale = next;
+    vp.syncAutoMode();
+    draw();
+    if (isMobileLayout()) scheduleMobileViewportSync();
+    if (Math.abs(Math.log(vp.scale / tgt)) > 0.005) {
+      _zoomAnimRaf = requestAnimationFrame(step);
+    } else {
+      vp.scale = tgt;
+      _zoomAnimRaf = 0; _zoomAnimTarget = null;
+      draw();
+    }
+  };
+  _zoomAnimRaf = requestAnimationFrame(step);
+}
+
 canvas.addEventListener("wheel", (e) => {
   e.preventDefault();
   const vp = state.renderer.vp;
-  vp.scale *= e.deltaY < 0 ? WHEEL_ZOOM_FACTOR : 1 / WHEEL_ZOOM_FACTOR;
-  // 충분히 확대/축소되면 자동 모드 전환(globe ↔ mercator)
-  vp.syncAutoMode();
-  draw();
-  if (isMobileLayout()) scheduleMobileViewportSync();
+  const base = _zoomAnimTarget || vp.scale;
+  const target = base * (e.deltaY < 0 ? WHEEL_ZOOM_FACTOR : 1 / WHEEL_ZOOM_FACTOR);
+  const rect = canvas.getBoundingClientRect();
+  const fx = e.clientX - rect.left;
+  const fy = e.clientY - rect.top;
+  smoothZoomTo(target, fx, fy);
 }, { passive: false });
 
 /** 문자 입력 중인 폼 요소에만 포커스가 있을 때 맵 단축키 무시 (파일·체크박스 등은 제외) */

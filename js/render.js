@@ -645,6 +645,30 @@ class Renderer {
     return best !== Infinity && r.cellCscl > best * CSCL_OVERLAP_TOL;
   }
 
+  /**
+   * 겹침 ENC에서 개략 셀의 면·선을 생략할지.
+   * bbox **중심만** 보면 큰 DEPARE 등이 상세 셀과 겹치는 구간 밖으로 크게 나갈 때,
+   * 그 바깥쪽이 통째로 안 그려져 **셀(M_COVR) 경계에 맞춘 직사각형 구멍·조각**이 된다.
+   * 모서리 4점 + 중심에서 모두 “이 셀보다 의미 있게 상세한 데이터가 있다”일 때만 생략한다.
+   */
+  _supersededByFinerForExtent(r) {
+    if (!this.declutter || r.cellCscl === Infinity || !this._bestCsclAt) return false;
+    const b = r.feat._bbox;
+    if (!b) return false;
+    const bestAt = this._bestCsclAt;
+    const tol = CSCL_OVERLAP_TOL;
+    const pts = [
+      [b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]],
+      [(b[0] + b[2]) * 0.5, (b[1] + b[3]) * 0.5],
+    ];
+    for (let i = 0; i < pts.length; i++) {
+      const best = bestAt(pts[i][0], pts[i][1]);
+      if (best === Infinity) return false;
+      if (!(r.cellCscl > best * tol)) return false;
+    }
+    return true;
+  }
+
   // Precompute the Mercator-projected geometry, label anchor and bounding box
   // for a feature, once. Cached on the feature (projection never changes).
   _prep(feat) {
@@ -926,19 +950,6 @@ class Renderer {
     // 가장 상세한 셀을 기준으로 개략 셀의 중복 표시를 줄인다.
     this._bestCsclAt = this._buildCsclLookup(denom, winMinX, winMaxX, winMinY, winMaxY);
 
-    // 다중 축척 셀 중복 그리기 억제용 판정.
-    // 피처가 속한 셀(cellCscl)이 그 위치의 최상세 셀보다 CSCL_OVERLAP_TOL배 넘게 개략이면
-    // 더 상세한 셀이 같은 지물을 덮어 그리므로 이 피처는 잔상으로 보고 생략한다.
-    // 면(area)·선(line)에 적용해 해안선 이중 그리기·면 누적을 막는다.
-    const supersededByFiner = (r) => {
-      if (!this.declutter || r.cellCscl === Infinity) return false;
-      const b = r.feat._bbox;
-      if (!b) return false;
-      const cx = (b[0] + b[2]) / 2, cy = (b[1] + b[3]) / 2;
-      const best = this._bestCsclAt(cx, cy);
-      return best !== Infinity && r.cellCscl > best * CSCL_OVERLAP_TOL;
-    };
-
     // pass 1: area fills
     // 위성 오버레이용으로, **실제로 그려진** LNDARE(육지면) 링을 함께 수집한다.
     // 위성 클립을 이 집합과 100% 동일하게 써서 "육지가 칠해진 곳 = 위성이 덮이는 곳"을 보장
@@ -964,15 +975,19 @@ class Renderer {
         for (const ring of pg.rings) if (ring.length >= 6) satLandRings.push(ring);
       }
     };
-    // pass 1a: LNDARE 제외 면 — 겹침 셀에서 개략 면은 상세 셀이 덮으면 생략.
+    // pass 1a: LNDARE 제외 면 — 겹침 셀에서 개략 면은 bbox 전 구간이 상세에 덮일 때만 생략.
+    // 생략이 줄어 겹쳐 그려지는 경우가 있으므로 CSCL 거친 순→상세 순으로 칠한다(LNDARE와 동일).
+    const areaRowsNonLnd = [];
     for (const r of resolved) {
       if (isEncBoundaryFeat(r.feat)) continue;
-      if (supersededByFiner(r)) continue;
+      if (this._supersededByFinerForExtent(r)) continue;
       const pg = r.feat._pg;
       if (!pg || pg.type !== "Area") continue;
       if (String(r.feat.acronym || "").toUpperCase() === "LNDARE") continue;
-      drawAreaOps(r, false);
+      areaRowsNonLnd.push(r);
     }
+    areaRowsNonLnd.sort((a, b) => csclSortKey(b) - csclSortKey(a));
+    for (const r of areaRowsNonLnd) drawAreaOps(r, false);
     // pass 1b: LNDARE — 상세 축척에서 개략 셀 육지가 superseded로 통째 빠지면
     // Natural Earth/바다색만 남는 구멍이 생기므로 **육지면은 겹침 생략하지 않음**.
     // CSCL 큰(개략) → 작은(상세) 순으로 칠해 상세 LNDARE가 항상 위에 온다.
@@ -1002,11 +1017,9 @@ class Renderer {
     const chblkRgb = this.s52.color("CHBLK");
     for (const r of resolved) {
       if (isEncBoundaryFeat(r.feat)) continue; // M_COVR/M_CSCL: 검정 윤곽 제거
-      if (supersededByFiner(r)) continue;      // 더 상세한 셀이 덮는 선(해안선 등)은 생략 — 이중 그리기 방지
+      if (this._supersededByFinerForExtent(r)) continue; // bbox 전 구간이 상세에 덮일 때만 생략
       const pg = r.feat._pg;
       if (!pg || pg.type === "Point") continue;
-      // 겹침 ENC: 상세 셀이 같은 위치를 덮으면 개략 셀의 윤곽선(LS)을 그리지 않음 — 이중 해안선 방지
-      if (this._shouldOmitForFinerOverlappingCell(r)) continue;
       for (const op of r.ops) {
         if (op.op !== "LS") continue;
         if (isMnsysFeat(r.feat) && op.color === chblkRgb) continue;
@@ -1018,8 +1031,8 @@ class Renderer {
     }
     for (const grp of lineGroups.values()) this._strokePolys(grp.rings, grp.op);
     // pass 3: point symbols, soundings, text
-    // 점 심볼·LS는 `_shouldOmitForFinerOverlappingCell`(앵커 우선). SOUNDG는 bbox 한 점으로
-    // 셀 단위 생략하면 광역 셀 사운딩이 통째 사라지므로 생략하지 않음.
+    // 점 심볼(SY)은 `_shouldOmitForFinerOverlappingCell`(앵커). LS는 패스 2에서 bbox 다점 기준 생략.
+    // SOUNDG는 bbox 한 점 필터를 쓰지 않음 — 광역 셀 사운딩이 통째 사라지는 것을 방지.
     for (const r of resolved) {
       for (const op of r.ops) {
         if (op.op === "SY") {

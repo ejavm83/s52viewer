@@ -2,7 +2,7 @@ import { DDF } from "./iso8211.js";
 import { S57 } from "./s57.js";
 import { S52 } from "./s52.js?v=5";
 import { loadCatalog } from "./catalog.js";
-import { Renderer } from "./render.js?v=73";
+import { Renderer } from "./render.js?v=74";
 
 const ATLAS_BY_TABLE = {
   DAY_BRIGHT: "assets/rastersymbols-day.png",
@@ -238,8 +238,6 @@ async function init() {
     state.renderer.showGrid = gridCb.checked;
     if (gridCb.checked) state.renderer.invalidateEncBoundaryResIfStale();
   }
-  const graticuleCb = document.getElementById("graticule");
-  if (graticuleCb) state.renderer.showGraticule = graticuleCb.checked;
 }
 
 function globalBoundsOf(idx) {
@@ -1184,7 +1182,7 @@ async function loadFromUrl(url) {
   }
 }
 
-// ---- view options (색상표·표시범주·수심단위: 클릭 시 순환 + 아이콘 회전) ----
+// ---- view options (색상표·표시범주: 클릭 시 순환 + 아이콘 회전) ----
 const PALETTE_CYCLE_OPTIONS = [
   { value: "DAY_BRIGHT", label: "DAY_BRIGHT" },
   { value: "DAY_WHITEBACK", label: "DAY_WHITEBACK" },
@@ -1197,12 +1195,6 @@ const DISPCAT_CYCLE_OPTIONS = [
   { value: "Standard", label: "Standard" },
   { value: "Other", label: "All / Other" },
 ];
-const DEPTHUNIT_CYCLE_OPTIONS = [
-  { value: "m", label: "미터(m)" },
-  { value: "ft", label: "피트(ft)" },
-  { value: "fathom", label: "패덤(fm)" },
-];
-
 /**
  * @param {string} id
  * @param {{ value: string, label: string }[]} options
@@ -1255,17 +1247,6 @@ wireToolbarCycle("dispcat", DISPCAT_CYCLE_OPTIONS, (v) => {
   draw();
   refreshObjects();
 });
-wireToolbarCycle("depthunit", DEPTHUNIT_CYCLE_OPTIONS, (v) => {
-  state.renderer.depthUnit = v;
-  draw();
-});
-document.getElementById("globe3d").addEventListener("change", (e) => {
-  const vp = state.renderer.vp;
-  vp.auto3D = e.target.checked;
-  if (!vp.auto3D && vp.mode === "globe") vp.exitGlobe();
-  else if (vp.auto3D) vp.syncAutoMode();
-  draw();
-});
 // 버드뷰(기울기) 슬라이더 — 현재 UI에서 숨김(요소 없으면 no-op). 기능은 보존.
 (() => {
   const tiltEl = document.getElementById("tilt");
@@ -1287,11 +1268,6 @@ document.getElementById("grid").addEventListener("change", (e) => {
   if (e.target.checked) state.renderer.invalidateEncBoundaryResIfStale();
   draw();
 });
-document.getElementById("graticule").addEventListener("change", (e) => {
-  state.renderer.showGraticule = e.target.checked;
-  draw();
-});
-
 document.getElementById("sidebarVisible").addEventListener("change", (e) => {
   document.body.classList.toggle("sidebar-collapsed", !e.target.checked);
   resize();

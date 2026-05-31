@@ -13,7 +13,7 @@
     background: #1c2733; color: #d4eaee; flex-wrap: wrap;
   }
   #toolbar label { font-size: 13px; display: flex; align-items: center; gap: 4px; }
-  /* 색상표·표시범주·수심단위 — 클릭 시 옵션 순환 */
+  /* 색상표·표시범주 — 클릭 시 옵션 순환 */
   #toolbar .toolbar-cycle {
     display: inline-flex; align-items: center; justify-content: space-between; gap: 8px;
     min-width: 9.5em; max-width: 14em; padding: 4px 8px; margin: 0;
@@ -291,14 +291,7 @@
         <span class="cycle-text">Standard</span><span class="cycle-icon" aria-hidden="true">↻</span>
       </button>
     </label>
-    <label>수심단위:
-      <button type="button" class="toolbar-cycle" id="depthunit" value="m" title="클릭하여 수심 단위 순환">
-        <span class="cycle-text">미터(m)</span><span class="cycle-icon" aria-hidden="true">↻</span>
-      </button>
-    </label>
     <label><input type="checkbox" id="grid" /> 셀 격자</label>
-    <label><input type="checkbox" id="graticule" /> 경위도선</label>
-    <label title="충분히 축소하면 자동으로 3D 지구본으로 전환. 확대하면 다시 2D 머케이터로 복귀."><input type="checkbox" id="globe3d" checked /> 3D 지구본</label>
     <label title="육지 영역에 위성 영상을 겹쳐 표시(바다는 S-52 차트 유지). 영상: Esri World Imagery."><input type="checkbox" id="satellite" /> 위성지도</label>
     <label><input type="checkbox" id="sidebarVisible" /> 셀 목록(좌측)</label>
   </div>
@@ -354,9 +347,9 @@
     <div id="status">초기화 중…</div>
     <h1 class="mobile-app-title">S-52 ENC Viewer</h1>
     <a href="about.html" class="doc-page doc-page-mobile">프로그램 설명</a>
-    <div id="app-credit">제작: 지엠티 김길용 수석 · v0.2.4 (2026.05.31)</div>
+    <div id="app-credit">제작: 지엠티 김길용 수석 · v0.2.5 (2026.05.31)</div>
   </div>
   <div id="map-loading" hidden>로딩 중…</div>
-  <script type="module" src="js/main.js?v=87"></script>
+  <script type="module" src="js/main.js?v=89"></script>
 </body>
 </html>

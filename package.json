@@ -1,6 +1,6 @@
 {
   "name": "s-52-viewer",
-  "version": "0.2.6",
+  "version": "0.2.9",
   "type": "module",
   "private": true,
   "scripts": {

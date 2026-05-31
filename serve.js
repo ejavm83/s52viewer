@@ -67,7 +67,14 @@ http
     readFile(filePath, (err, data) => {
       if (err) { res.writeHead(404); res.end("not found"); return; }
       const ext = path.extname(filePath).toLowerCase();
-      res.writeHead(200, { "Content-Type": MIME[ext] || "application/octet-stream" });
+      const headers = { "Content-Type": MIME[ext] || "application/octet-stream" };
+      // 변하지 않는 정적 자산(ENC 셀·심볼·카탈로그)은 장기 캐시 → 재방문 시 네트워크 0.
+      if (ext === ".000" || ext === ".png" || ext === ".csv" || ext === ".xml") {
+        headers["Cache-Control"] = "public, max-age=31536000, immutable";
+      } else if (ext === ".js") {
+        headers["Cache-Control"] = "public, max-age=86400"; // ?v= 쿼리로 무효화하므로 안전
+      }
+      res.writeHead(200, headers);
       res.end(data);
     });
   })

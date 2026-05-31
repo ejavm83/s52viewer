@@ -389,12 +389,32 @@ class CellLoader {
 }
 const loader = new CellLoader(Math.min(4, navigator.hardwareConcurrency || 4));
 
+/**
+ * ENC 셀(.000) 영구 캐시 — Cache API(디스크)에 한 번 받은 바이트를 저장해, 새로고침·재방문 시
+ * 네트워크 없이 즉시 로드한다. ENC 셀은 갱신 시 파일명이 바뀌므로 장기 캐시가 안전.
+ * 미지원 환경(file:// 등)에선 null → HTTP 캐시(force-cache)에 의존.
+ */
+const _encDiskCache = (typeof caches !== "undefined")
+  ? caches.open("enc-cells-v1").catch(() => null)
+  : Promise.resolve(null);
+async function fetchEncCell(url) {
+  const cache = await _encDiskCache;
+  if (cache) {
+    const hit = await cache.match(url);
+    if (hit) return hit.arrayBuffer();           // 디스크 캐시 적중 → 네트워크 0
+  }
+  const res = await fetch(url, { cache: "force-cache" });
+  if (!res.ok) throw new Error("ENC " + res.status + " " + url);
+  if (cache) { try { await cache.put(url, res.clone()); } catch (_e) { /* quota 초과 등 */ } }
+  return res.arrayBuffer();
+}
+
 async function ensureLoaded(name) {
   const cell = state.renderer.cells.get(name);
   if (!cell || cell.loaded) return cell;
   if (cell._loading) return cell._loading; // dedupe concurrent requests
   cell._loading = (async () => {
-    const buf = await (await fetch("000/" + name)).arrayBuffer();
+    const buf = await fetchEncCell("000/" + name);
     const chart = await loader.parse(buf); // parsed in a worker (off main thread)
     cell.features = chart.features;
     cell.chartBounds = chart.bounds;

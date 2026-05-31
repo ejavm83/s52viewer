@@ -1,5 +1,13 @@
 # 변경 기록
 
+## v0.2.3 (2026-05-31)
+
+- **표기**: 앱 하단 크레딧 및 패키지 버전을 v0.2.3 (2026.05.31)으로 갱신, 모듈 캐시 버스트(`index.html`, `main.js`).
+- **다중 축척**: 면·선에도 위치별 최상세 CSCL 기준 생략(`supersededByFiner`)으로 해안선 이중 그리기·면 누적 완화; SOUNDG는 bbox 한 점 필터를 제거해 광역 셀 사운딩 소실 방지 (`render.js`).
+- **사운딩**: `projectFeature`가 `feat.soundings`를 비운 뒤에도 `_hasSoundings`로 렌더 통과·표시범주 면제가 유지되게 해 팬/줌 후 사운딩이 사라지던 문제 수정 (`render.js`).
+- **해안선 디테일**: `_path()` decimation 임계 `MIN_SEG2`를 0.25로 낮춰 미세 굴곡 보존 (`render.js`).
+- **등심선**: DEPCNT 기본 선 굵기 상향, `VALDCO`가 안전 수심과 같으면 더 굵게 강조 (`s52.js`).
+
 ## v0.2.2 (2026-05-27)
 
 - **모바일 자동 3D**: 지역 초기 `fit`으로 `zoomOutMinScale`이 3D 전환 임계보다 크게 잡혀 핀치 축소만으로는 지구본에 못 들어가던 문제를, `auto3D`일 때 사용자 줌 하한을 `min(zoomOutMinScale, globeThreshold×0.98)`으로 완화해 해결 (`Viewport.minScaleForUserZoom`, `render.js`, `main.js`).

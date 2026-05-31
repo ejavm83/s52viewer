@@ -18,8 +18,11 @@ function prioIndex(p) {
 }
 
 const DASH = [6, 4], DOTT = [1, 3], EMPTY_DASH = [];
-/** Min squared screen-space edge length (px²) for path decimation; see _path(). */
-const MIN_SEG2 = 1;
+/**
+ * Min squared screen-space edge length (px²) for path decimation; see `_path()`.
+ * 0.25 = 0.5 px 미만 정점만 제거 — 해안 미세 굴곡 보존.
+ */
+const MIN_SEG2 = 0.25;
 /**
  * 겹치는 ENC 커버리지에서 컴파일 축척(CSCL)이 더 큰(숫자는 더 작음 = 더 상세한) 셀을 우선할 때
  * 허용 비율. IHO S-52 Presentation Library·ECDIS 관행(겹침 구간은 가용한 가장 큰 축척 데이터)과
@@ -570,7 +573,7 @@ class Renderer {
     for (const cell of cells) {
       if (!cell.loaded || !cell.features) continue;
       for (const feat of cell.features) {
-        if (!feat.geom && !feat.soundings) continue;
+        if (!feat.geom && !feat.soundings && !feat._hasSoundings) continue;
         m.set(feat.acronym, (m.get(feat.acronym) || 0) + 1);
       }
     }
@@ -672,7 +675,9 @@ class Renderer {
         culled++; continue;
       }
       for (const feat of cell.features) {
-        if (!feat.geom && !feat.soundings) continue;
+        // _hasSoundings: projectFeature가 feat.soundings를 null로 비운 뒤에도 사운딩
+        // 보유 피처를 통과시키기 위한 영속 플래그(미투영 첫 프레임은 feat.soundings로 판정).
+        if (!feat.geom && !feat.soundings && !feat._hasSoundings) continue;
         if (this.hiddenClasses.has(feat.acronym)) continue; // per-object-class toggle
         if (!this.showGrid && isEncBoundaryFeat(feat)) continue;
         if (this.respectScamin) {
@@ -698,7 +703,7 @@ class Renderer {
         const displayCatForFilter = depthContourStandardDisplay(feat)
           ? "Standard"
           : res.displayCat;
-        if (!feat.soundings && !this.catAllowed(displayCatForFilter) && !encBoundaryWithGrid) continue;
+        if (!feat.soundings && !feat._hasSoundings && !this.catAllowed(displayCatForFilter) && !encBoundaryWithGrid) continue;
         this._prep(feat);
         const b = feat._bbox;
         if (b) {
@@ -728,9 +733,23 @@ class Renderer {
     // 가장 상세한 셀을 기준으로 개략 셀의 중복 표시를 줄인다.
     this._bestCsclAt = this._buildCsclLookup(denom, winMinX, winMaxX, winMinY, winMaxY);
 
+    // 다중 축척 셀 중복 그리기 억제용 판정.
+    // 피처가 속한 셀(cellCscl)이 그 위치의 최상세 셀보다 CSCL_OVERLAP_TOL배 넘게 개략이면
+    // 더 상세한 셀이 같은 지물을 덮어 그리므로 이 피처는 잔상으로 보고 생략한다.
+    // 면(area)·선(line)에 적용해 해안선 이중 그리기·면 누적을 막는다.
+    const supersededByFiner = (r) => {
+      if (!this.declutter || r.cellCscl === Infinity) return false;
+      const b = r.feat._bbox;
+      if (!b) return false;
+      const cx = (b[0] + b[2]) / 2, cy = (b[1] + b[3]) / 2;
+      const best = this._bestCsclAt(cx, cy);
+      return best !== Infinity && r.cellCscl > best * CSCL_OVERLAP_TOL;
+    };
+
     // pass 1: area fills
     for (const r of resolved) {
       if (isEncBoundaryFeat(r.feat)) continue; // M_COVR/M_CSCL: 그리드 오버레이가 대신 표현
+      if (supersededByFiner(r)) continue;      // 더 상세한 셀이 덮는 면은 생략
       const pg = r.feat._pg;
       if (!pg || pg.type !== "Area") continue;
       for (const op of r.ops) {
@@ -745,6 +764,7 @@ class Renderer {
     const chblkRgb = this.s52.color("CHBLK");
     for (const r of resolved) {
       if (isEncBoundaryFeat(r.feat)) continue; // M_COVR/M_CSCL: 검정 윤곽 제거
+      if (supersededByFiner(r)) continue;      // 더 상세한 셀이 덮는 선(해안선 등)은 생략 — 이중 그리기 방지
       const pg = r.feat._pg;
       if (!pg || pg.type === "Point") continue;
       // 겹침 ENC: 상세 셀이 같은 위치를 덮으면 개략 셀의 윤곽선(LS)을 그리지 않음 — 이중 해안선 방지
@@ -760,17 +780,16 @@ class Renderer {
     }
     for (const grp of lineGroups.values()) this._strokePolys(grp.rings, grp.op);
     // pass 3: point symbols, soundings, text
-    // 점 심볼/사운딩은 "위치별 최상세 셀"만 그린다(pass 2의 LS와 동일 CSCL 규칙).
-    // r.cellCscl > bestCsclAt(대표점) × CSCL_OVERLAP_TOL 이면 더 상세한 셀이 그 위치를
-    // 덮고 있으므로 이 셀의 점 심볼은 잔상으로 보고 생략.
+    // 점 심볼·LS는 `_shouldOmitForFinerOverlappingCell`(앵커 우선). SOUNDG는 bbox 한 점으로
+    // 셀 단위 생략하면 광역 셀 사운딩이 통째 사라지므로 생략하지 않음.
     for (const r of resolved) {
       for (const op of r.ops) {
         if (op.op === "SY") {
           if (this._shouldOmitForFinerOverlappingCell(r)) continue;
           this._symbolFeature(r.feat, op.sym, op.rot);
         } else if (op.op === "SOUNDG" && this.showSoundings) {
-          if (this._shouldOmitForFinerOverlappingCell(r, { soundings: true })) continue;
           this._soundings(r.feat);
+        } else if (op.op === "TX" && this.showText) {
           // 텍스트는 셀 우선순위 필터(CSCL)를 적용하지 않는다 — 셀마다 서로 다른 라벨
           // (개략도 "동해" vs 상세 "동해항 X부두")이 의도되며, 위치별 최상세 셀만
           // 그릴 경우 개략도 라벨이 잘려 정보가 거의 안 보이게 됨.
@@ -1985,6 +2004,10 @@ function projectFeature(feat) {
   feat._pg = pg;
   feat._ps = ps;
   feat._bbox = minx === Infinity ? null : [minx, miny, maxx, maxy];
+  // 사운딩 보유 여부를 영속 플래그로 남긴다. 아래에서 feat.soundings를 null로 비우면
+  // 렌더 루프의 "사운딩은 표시범주 필터 면제" 검사가 두 번째 프레임부터 깨져
+  // 사운딩이 팬/줌 후 사라지기 때문(원래 버그).
+  feat._hasSoundings = !!ps;
   // keep a tiny truthy geom marker so the "has content" checks still pass
   if (feat.geom) feat.geom = { type: feat.geom.type };
   else if (ps) feat.geom = { type: "Sounding" };

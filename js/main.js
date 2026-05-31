@@ -1,8 +1,8 @@
 import { DDF } from "./iso8211.js";
 import { S57 } from "./s57.js";
-import { S52 } from "./s52.js?v=3";
+import { S52 } from "./s52.js?v=4";
 import { loadCatalog } from "./catalog.js";
-import { Renderer } from "./render.js?v=54";
+import { Renderer } from "./render.js?v=57";
 
 const ATLAS_BY_TABLE = {
   DAY_BRIGHT: "assets/rastersymbols-day.png",

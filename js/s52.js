@@ -228,7 +228,16 @@ class S52 {
     if (proc.startsWith("DEPARE")) return this._depare(feat, ops);
     if (proc.startsWith("SEABED")) return this._seabed(feat, ops);
     if (proc.startsWith("DEPCNT")) {
-      ops.push({ op: "LS", style: "SOLD", width: 1, color: this.color("DEPCN") });
+      // 등심선 — OpenCPN 비교 시 너무 옅어 1.0 → 1.3 px로 약간 굵게(가독성).
+      // safety contour(VALDCO == this.safety)는 더 굵게 표시해 위험 한계선을 강조.
+      const v = parseFloat(feat.attrs.VALDCO);
+      const isSafety = !Number.isNaN(v) && v === this.safety;
+      ops.push({
+        op: "LS",
+        style: "SOLD",
+        width: isSafety ? 2 : 1.3,
+        color: this.color("DEPCN"),
+      });
       return;
     }
     if (proc.startsWith("SOUNDG")) { ops.push({ op: "SOUNDG" }); return; }

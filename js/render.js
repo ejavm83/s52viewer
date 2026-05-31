@@ -20,6 +20,12 @@ function prioIndex(p) {
 const DASH = [6, 4], DOTT = [1, 3], EMPTY_DASH = [];
 /** Min squared screen-space edge length (px²) for path decimation; see _path(). */
 const MIN_SEG2 = 1;
+/**
+ * 겹치는 ENC 커버리지에서 컴파일 축척(CSCL)이 더 큰(숫자는 더 작음 = 더 상세한) 셀을 우선할 때
+ * 허용 비율. IHO S-52 Presentation Library·ECDIS 관행(겹침 구간은 가용한 가장 큰 축척 데이터)과
+ * 동일하게 점 심볼·사운딩·선(LS)에 공통 적용한다.
+ */
+const CSCL_OVERLAP_TOL = 1.5;
 
 /**
  * S-52 아틀라스 심볼 접두: TSS·항로·추천항적·심수로·조류/만조 등 **방향 화살표**류.
@@ -99,6 +105,19 @@ const ENC_BOUNDARY_WITH_GRID = new Set(["M_COVR", "M_CSCL"]);
  * OBJL 타입 불일치(문자열 "302"), 또는 약어만 비정상일 때도 식별해
  * DATCVR(CHBLK) 윤곽이 선 패스로 새는 것을 막는다.
  */
+/**
+ * 수심 등고선: chartsymbols.xml에서 display-cat이 Other로 잡혀 Standard 뷰에서
+ * 전부 걸러지는 것을 막기 위해, 필터 단계에서만 Standard와 동일 취급한다.
+ * 선형 DEPARE(경계가 DEPCNT02 CS로 그려지는 경우)도 동일.
+ */
+function depthContourStandardDisplay(feat) {
+  if (!feat) return false;
+  const ac = String(feat.acronym || "").trim().toUpperCase();
+  if (ac === "DEPCNT") return true;
+  if (ac === "DEPARE" && feat.prim === 2) return true;
+  return false;
+}
+
 function isEncBoundaryFeat(feat) {
   if (!feat) return false;
   const ac = String(feat.acronym || "").trim().toUpperCase();
@@ -362,10 +381,16 @@ class Viewport {
   }
   // Representative display-scale denominator (1:N) for SCAMIN comparison.
   scaleDenominator() {
+    const s = this.scale, cy = this.cy;
+    if (this._sdCacheScale === s && this._sdCacheCy === cy) return this._sdCacheVal;
     const R = 6378137; // earth radius (m)
     const phi = (this.centerLat() * Math.PI) / 180;
-    const metresPerPixel = (R * Math.cos(phi)) / this.scale;
-    return metresPerPixel / (0.0254 / 96); // assume ~96 dpi
+    const metresPerPixel = (R * Math.cos(phi)) / s;
+    const v = metresPerPixel / (0.0254 / 96); // assume ~96 dpi
+    this._sdCacheScale = s;
+    this._sdCacheCy = cy;
+    this._sdCacheVal = v;
+    return v;
   }
   /** Mercator 캐시 좌표(mx,my) — `sx`/`sy`의 역변환(픽셀은 캔버스 좌상단 기준). */
   mercFromScreen(px, py) {
@@ -388,7 +413,12 @@ class Viewport {
 class Renderer {
   constructor(canvas, s52, atlas) {
     this.canvas = canvas;
-    this.ctx = canvas.getContext("2d");
+    this.ctx = canvas.getContext("2d", {
+      alpha: true,
+      // 낮은 지연·합성 비용 힌트(브라우저가 무시할 수 있음)
+      desynchronized: true,
+    });
+    this.ctx.imageSmoothingEnabled = false;
     this.s52 = s52;
     this.atlas = atlas;
     this.vp = new Viewport(canvas);
@@ -436,10 +466,54 @@ class Renderer {
     return true;
   }
 
+  /**
+   * `_renderMercator` 동안만 설정: Mercator → 화면 선형변환을 vp 체인 없이 적용.
+   * `_path`·해치·심볼·텍스트 등 핫패스에서 `sx`/`sy` 호출 비용을 줄인다.
+   */
+  _sx(mx) {
+    const m = this._mercScreen;
+    return m ? (mx - m.cx) * m.s + m.hw : this.vp.sx(mx);
+  }
+  _sy(my) {
+    const m = this._mercScreen;
+    return m ? m.hh - (my - m.cy) * m.s : this.vp.sy(my);
+  }
+
   catAllowed(cat) {
     const rank = { Displaybase: 0, Standard: 1, Other: 2, Mariners: 3 };
     const lim = rank[this.minDisplayCat] ?? 2;
     return (rank[cat] ?? 1) <= lim;
+  }
+
+  /**
+   * declutter ON이고, 이 resolved 항목이 속한 셀이 `cellCscl`로 표기된 개략도이며,
+   * 기준점이 더 상세한 겹침 셀의 범위 안이면 true.
+   * ECDIS에서 겹침 ENC에 대해 가용한 가장 큰 축척(가장 작은 CSCL) 데이터를 쓰는 처리와 동일한 취지.
+   * @param {{ soundings?: boolean }} [opts] — `soundings: true`이면 앵커 대신 bbox 중심만 사용(사운딩 전용).
+   */
+  _shouldOmitForFinerOverlappingCell(r, opts) {
+    if (!this.declutter || r.cellCscl === Infinity || !this._bestCsclAt) return false;
+    let cx, cy;
+    if (opts && opts.soundings) {
+      if (!r.feat._bbox) return false;
+      const b = r.feat._bbox;
+      cx = (b[0] + b[2]) / 2;
+      cy = (b[1] + b[3]) / 2;
+    } else {
+      const pg = r.feat._pg;
+      if (pg && pg.anchor) {
+        cx = pg.anchor[0];
+        cy = pg.anchor[1];
+      } else if (r.feat._bbox) {
+        const b = r.feat._bbox;
+        cx = (b[0] + b[2]) / 2;
+        cy = (b[1] + b[3]) / 2;
+      } else {
+        return false;
+      }
+    }
+    const best = this._bestCsclAt(cx, cy);
+    return best !== Infinity && r.cellCscl > best * CSCL_OVERLAP_TOL;
   }
 
   // Precompute the Mercator-projected geometry, label anchor and bounding box
@@ -551,6 +625,7 @@ class Renderer {
   _renderMercator() {
     const ctx = this.ctx, vp = this.vp;
     const w = this.canvas.width, h = this.canvas.height;
+    this._mercScreen = { s: vp.scale, cx: vp.cx, cy: vp.cy, hw: w * 0.5, hh: h * 0.5 };
     ctx.fillStyle = this.s52.color("DEPDW");
     ctx.fillRect(0, 0, w, h);
 
@@ -577,7 +652,9 @@ class Renderer {
     this._drawMercatorWorldOverlay(winMinX, winMaxX, winMinY, winMaxY);
 
     let drawn = 0, culled = 0;
-    const resolved = [];
+    const PRIO_BUCKETS = 12;
+    const buckets = new Array(PRIO_BUCKETS);
+    for (let i = 0; i < PRIO_BUCKETS; i++) buckets[i] = [];
     for (const cell of this.cells.values()) {
       if (!cell.visible || !cell.loaded || !cell.features) continue;
       const cscl = cell.bounds && cell.bounds.cscl;
@@ -599,8 +676,13 @@ class Renderer {
         if (this.hiddenClasses.has(feat.acronym)) continue; // per-object-class toggle
         if (!this.showGrid && isEncBoundaryFeat(feat)) continue;
         if (this.respectScamin) {
-          const sc = parseFloat(feat.attrs.SCAMIN);
-          if (!Number.isNaN(sc) && denom > sc) continue;
+          if (feat._scaminN === undefined) {
+            const raw = feat.attrs && feat.attrs.SCAMIN;
+            const sc = raw != null && raw !== "" ? parseFloat(raw) : NaN;
+            feat._scaminN = Number.isNaN(sc) ? null : sc;
+          }
+          const scn = feat._scaminN;
+          if (scn != null && denom > scn) continue;
         }
         // cached symbology resolution (only colours depend on the table)
         if (feat._resTable !== table) {
@@ -611,7 +693,12 @@ class Renderer {
         const res = feat._res;
         const encBoundaryWithGrid =
           this.showGrid && isEncBoundaryFeat(feat);
-        if (!feat.soundings && !this.catAllowed(res.displayCat) && !encBoundaryWithGrid) continue;
+        // DEPCNT·선형 DEPARE는 PL상 display-cat이 Other인데, 실무·ECDIS 관행상
+        // Standard 묶음에서도 수심 등고선을 기대하므로 표시 범주만 Standard로 본다.
+        const displayCatForFilter = depthContourStandardDisplay(feat)
+          ? "Standard"
+          : res.displayCat;
+        if (!feat.soundings && !this.catAllowed(displayCatForFilter) && !encBoundaryWithGrid) continue;
         this._prep(feat);
         const b = feat._bbox;
         if (b) {
@@ -627,13 +714,18 @@ class Renderer {
           }
         }
         drawn++;
-        resolved.push({ feat, ops: res.ops, prio: res.prio, cellCscl: cscl || Infinity });
+        const bucket = buckets[res.prio < PRIO_BUCKETS ? res.prio : PRIO_BUCKETS - 1];
+        bucket.push({ feat, ops: res.ops, prio: res.prio, cellCscl: cscl || Infinity });
       }
     }
-    resolved.sort((a, b) => a.prio - b.prio);
+    const resolved = [];
+    for (let pi = 0; pi < PRIO_BUCKETS; pi++) {
+      const b = buckets[pi];
+      for (let j = 0; j < b.length; j++) resolved.push(b[j]);
+    }
 
-    // 점 심볼/사운딩용 셀 우선순위 인덱스 — 같은 위치를 여러 축척 셀이 덮을 때
-    // 가장 상세한 셀의 부이·등화·사운딩만 그리도록 위치별 최소 CSCL을 조회.
+    // 점 심볼/사운딩/선(LS)용 셀 우선순위 인덱스 — 같은 위치를 여러 축척 셀이 덮을 때
+    // 가장 상세한 셀을 기준으로 개략 셀의 중복 표시를 줄인다.
     this._bestCsclAt = this._buildCsclLookup(denom, winMinX, winMaxX, winMinY, winMaxY);
 
     // pass 1: area fills
@@ -655,6 +747,8 @@ class Renderer {
       if (isEncBoundaryFeat(r.feat)) continue; // M_COVR/M_CSCL: 검정 윤곽 제거
       const pg = r.feat._pg;
       if (!pg || pg.type === "Point") continue;
+      // 겹침 ENC: 상세 셀이 같은 위치를 덮으면 개략 셀의 윤곽선(LS)을 그리지 않음 — 이중 해안선 방지
+      if (this._shouldOmitForFinerOverlappingCell(r)) continue;
       for (const op of r.ops) {
         if (op.op !== "LS") continue;
         if (isMnsysFeat(r.feat) && op.color === chblkRgb) continue;
@@ -666,30 +760,17 @@ class Renderer {
     }
     for (const grp of lineGroups.values()) this._strokePolys(grp.rings, grp.op);
     // pass 3: point symbols, soundings, text
-    // 점 심볼/사운딩은 OpenCPN과 동일하게 "위치별 최상세 셀"만 그린다.
-    // r.cellCscl > bestCsclAt(앵커) × CSCL_TOL 이면 더 상세한 셀이 그 위치를
+    // 점 심볼/사운딩은 "위치별 최상세 셀"만 그린다(pass 2의 LS와 동일 CSCL 규칙).
+    // r.cellCscl > bestCsclAt(대표점) × CSCL_OVERLAP_TOL 이면 더 상세한 셀이 그 위치를
     // 덮고 있으므로 이 셀의 점 심볼은 잔상으로 보고 생략.
-    const CSCL_TOL = 1.5;
     for (const r of resolved) {
       for (const op of r.ops) {
         if (op.op === "SY") {
-          if (this.declutter && r.cellCscl !== Infinity) {
-            const a = r.feat._pg && r.feat._pg.anchor;
-            if (a) {
-              const best = this._bestCsclAt(a[0], a[1]);
-              if (best !== Infinity && r.cellCscl > best * CSCL_TOL) continue;
-            }
-          }
+          if (this._shouldOmitForFinerOverlappingCell(r)) continue;
           this._symbolFeature(r.feat, op.sym, op.rot);
         } else if (op.op === "SOUNDG" && this.showSoundings) {
-          if (this.declutter && r.cellCscl !== Infinity && r.feat._bbox) {
-            const cx = (r.feat._bbox[0] + r.feat._bbox[2]) / 2;
-            const cy = (r.feat._bbox[1] + r.feat._bbox[3]) / 2;
-            const best = this._bestCsclAt(cx, cy);
-            if (best !== Infinity && r.cellCscl > best * CSCL_TOL) continue;
-          }
+          if (this._shouldOmitForFinerOverlappingCell(r, { soundings: true })) continue;
           this._soundings(r.feat);
-        } else if (op.op === "TX" && this.showText) {
           // 텍스트는 셀 우선순위 필터(CSCL)를 적용하지 않는다 — 셀마다 서로 다른 라벨
           // (개략도 "동해" vs 상세 "동해항 X부두")이 의도되며, 위치별 최상세 셀만
           // 그릴 경우 개략도 라벨이 잘려 정보가 거의 안 보이게 됨.
@@ -697,7 +778,7 @@ class Renderer {
           if (this.declutter) {
             const a = r.feat._pg && r.feat._pg.anchor;
             if (a && op.text) {
-              const sx = this.vp.sx(a[0]), sy = this.vp.sy(a[1]);
+              const sx = this._sx(a[0]), sy = this._sy(a[1]);
               if (spatialDedup(this._textDedupGrid, op.text, sx, sy, TEXT_DEDUP_PX, TEXT_DEDUP_PX)) continue;
             }
           }
@@ -709,6 +790,7 @@ class Renderer {
     if (this.showGrid) this._drawGrid();
     if (this.showGraticule) this._drawGraticule(winMinX, winMaxX, winMinY, winMaxY);
     this.lastStats = { drawn, culled, denom: Math.round(denom) };
+    this._mercScreen = null;
   }
 
   // --- fast pan: snapshot the last full frame, then blit it translated while
@@ -910,7 +992,7 @@ class Renderer {
     if (this.vp.scale > 30000) return; // 항만 상세 줌 이상 — 세계 지도 의미 없음
     this._prepWorldLandMerc();
     this._prepWorldCountriesMerc();
-    const ctx = this.ctx, vp = this.vp;
+    const ctx = this.ctx;
     // 1) 대륙 면
     const lands = this._worldLandMerc;
     if (lands && lands.length) {
@@ -927,8 +1009,8 @@ class Renderer {
         for (const flat of item.rings) {
           const n = flat.length;
           if (n < 4) continue;
-          ctx.moveTo(vp.sx(flat[0]), vp.sy(flat[1]));
-          for (let i = 2; i < n; i += 2) ctx.lineTo(vp.sx(flat[i]), vp.sy(flat[i + 1]));
+          ctx.moveTo(this._sx(flat[0]), this._sy(flat[1]));
+          for (let i = 2; i < n; i += 2) ctx.lineTo(this._sx(flat[i]), this._sy(flat[i + 1]));
           ctx.closePath();
         }
         ctx.fill("evenodd");
@@ -947,8 +1029,8 @@ class Renderer {
         for (const flat of item.rings) {
           const n = flat.length;
           if (n < 4) continue;
-          ctx.moveTo(vp.sx(flat[0]), vp.sy(flat[1]));
-          for (let i = 2; i < n; i += 2) ctx.lineTo(vp.sx(flat[i]), vp.sy(flat[i + 1]));
+          ctx.moveTo(this._sx(flat[0]), this._sy(flat[1]));
+          for (let i = 2; i < n; i += 2) ctx.lineTo(this._sx(flat[i]), this._sy(flat[i + 1]));
           ctx.closePath();
         }
         ctx.stroke();
@@ -1520,7 +1602,7 @@ class Renderer {
   }
 
   _drawGraticule(winMinX, winMaxX, winMinY, winMaxY) {
-    const ctx = this.ctx, vp = this.vp;
+    const ctx = this.ctx;
     const { lonMin, lonMax, latMin, latMax } = this._viewLonLatDeg(winMinX, winMaxX, winMinY, winMaxY);
     const lonSpan = lonMax - lonMin;
     const latSpan = latMax - latMin;
@@ -1546,8 +1628,8 @@ class Renderer {
 
     for (let i = 0; i < lonVisible.length; i++) {
       const L = lonVisible[i];
-      const x = vp.sx(mercX(L));
-      const y0 = vp.sy(winMinY), y1 = vp.sy(winMaxY);
+      const x = this._sx(mercX(L));
+      const y0 = this._sy(winMinY), y1 = this._sy(winMaxY);
       this._strokeGraticuleSegment(ctx, x, y0, x, y1);
       if (i % lonLabelEvery === 0) {
         const lab = this._formatLonLabel(L, lonStep);
@@ -1557,8 +1639,8 @@ class Renderer {
 
     for (let i = 0; i < latVisible.length; i++) {
       const La = latVisible[i];
-      const y = vp.sy(mercY(La));
-      const x0 = vp.sx(winMinX), x1 = vp.sx(winMaxX);
+      const y = this._sy(mercY(La));
+      const x0 = this._sx(winMinX), x1 = this._sx(winMaxX);
       this._strokeGraticuleSegment(ctx, x0, y, x1, y);
       if (i % latLabelEvery === 0) {
         const lab = this._formatLatLabel(La, latStep);
@@ -1619,15 +1701,14 @@ class Renderer {
   _fillAchareHatch(rings) {
     if (!rings || !rings.length) return;
     const ctx = this.ctx;
-    const vp = this.vp;
     let sx0 = Infinity;
     let sy0 = Infinity;
     let sx1 = -Infinity;
     let sy1 = -Infinity;
     for (const ring of rings) {
       for (let i = 0; i < ring.length; i += 2) {
-        const px = vp.sx(ring[i]);
-        const py = vp.sy(ring[i + 1]);
+        const px = this._sx(ring[i]);
+        const py = this._sy(ring[i + 1]);
         if (px < sx0) sx0 = px;
         if (py < sy0) sy0 = py;
         if (px > sx1) sx1 = px;
@@ -1683,8 +1764,8 @@ class Renderer {
   /**
    * 화면 안에 들어오는 셀들의 (Mercator) 경계와 CSCL을 모아, 임의 위치 (mx, my)
    * 에서의 **가장 상세한(=가장 작은) CSCL** 을 즉시 돌려주는 클로저를 만든다.
-   * 더 상세한 셀이 같은 위치를 덮으면 개략 셀의 점 심볼·사운딩을 생략하는
-   * OpenCPN 거동을 구현하기 위한 인덱스.
+   * 더 상세한 셀이 같은 위치를 덮으면 개략 셀의 점 심볼·사운딩·**선(LS)** 을 생략하는
+   * 겹침 ENC 처리(IHO S-52/ECDIS: 해당 구간의 가장 큰 축척 데이터 우선)에 쓴다.
    */
   _buildCsclLookup(denom, winMinX, winMaxX, winMinY, winMaxY) {
     const cells = [];
@@ -1735,12 +1816,12 @@ class Renderer {
   // emitted so rings stay closed.
   // arr: flat Float64Array [x0,y0,x1,y1,…] in Mercator units.
   _path(arr) {
-    const ctx = this.ctx, vp = this.vp;
+    const ctx = this.ctx;
     const n = arr.length;
-    let lx = vp.sx(arr[0]), ly = vp.sy(arr[1]);
+    let lx = this._sx(arr[0]), ly = this._sy(arr[1]);
     ctx.moveTo(lx, ly);
     for (let i = 2; i < n; i += 2) {
-      const x = vp.sx(arr[i]), y = vp.sy(arr[i + 1]);
+      const x = this._sx(arr[i]), y = this._sy(arr[i + 1]);
       const dx = x - lx, dy = y - ly;
       if (i === n - 2 || dx * dx + dy * dy >= MIN_SEG2) {
         ctx.lineTo(x, y);
@@ -1753,7 +1834,7 @@ class Renderer {
     const a = feat._pg && feat._pg.anchor;
     if (!a) return;
     if (this.declutter) {
-      const sx = this.vp.sx(a[0]), sy = this.vp.sy(a[1]);
+      const sx = this._sx(a[0]), sy = this._sy(a[1]);
       // (1) 항행보조 시설: 다중 축척 셀이 같은 부이/등화를 중복 수록할 때 잔상 제거
       const navGroup = navaidGroupKey(feat);
       if (navGroup &&
@@ -1773,7 +1854,7 @@ class Renderer {
   // canvas rotation equals the bearing directly.
   _blit(symName, mx, my, rot) {
     const s = this.s52.symbols.get(symName);
-    const x = this.vp.sx(mx), y = this.vp.sy(my);
+    const x = this._sx(mx), y = this._sy(my);
     if (!s || !this.atlas) {
       const ctx = this.ctx;
       ctx.fillStyle = this.s52.color("CHBLK");
@@ -1795,14 +1876,14 @@ class Renderer {
   _soundings(feat) {
     const ps = feat._ps;
     if (!ps) return;
-    const ctx = this.ctx, vp = this.vp;
+    const ctx = this.ctx;
     const fpx = this._soundingFontPx || 10;
     const charW = fpx * 0.6;
     ctx.fillStyle = this.s52.color("SNDG2");
     ctx.font = `${fpx}px sans-serif`;
     ctx.textAlign = "center";
     for (let i = 0; i < ps.length; i += 3) { // flat [x,y,depth,…]
-      const x = vp.sx(ps[i]), y = vp.sy(ps[i + 1]);
+      const x = this._sx(ps[i]), y = this._sy(ps[i + 1]);
       if (x < -20 || y < -20 || x > this.canvas.width + 20 || y > this.canvas.height + 20) continue;
       const label = soundingLabel(ps[i + 2], this.depthUnit); // metres
       const w = label.length * charW;
@@ -1814,7 +1895,7 @@ class Renderer {
   _text(feat, op) {
     const a = feat._pg && feat._pg.anchor;
     if (!a) return;
-    const x = this.vp.sx(a[0]), y = this.vp.sy(a[1]);
+    const x = this._sx(a[0]), y = this._sy(a[1]);
     const fpx = this._labelFontPx || 11;
     const charW = fpx * 0.55;
     const w = op.text.length * charW + 4;

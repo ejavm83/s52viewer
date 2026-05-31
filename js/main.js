@@ -2,7 +2,7 @@ import { DDF } from "./iso8211.js";
 import { S57 } from "./s57.js";
 import { S52 } from "./s52.js?v=3";
 import { loadCatalog } from "./catalog.js";
-import { Renderer } from "./render.js?v=53";
+import { Renderer } from "./render.js?v=54";
 
 const ATLAS_BY_TABLE = {
   DAY_BRIGHT: "assets/rastersymbols-day.png",
@@ -1089,10 +1089,10 @@ document.getElementById("sidebarVisible").addEventListener("change", (e) => {
 // ---- pan & zoom + click-to-toggle a cell on the grid ----
 /**
  * 마우스 휠 한 노치당 확대/축소 배율.
- * 구글 어스 류와 유사한 “큼직한” 줌 — 한 번 굴리면 약 2배.
+ * 한 노치당 약 20% 수준(이전 2배보다 촘촘함). 더 세밀히 원하면 1.15 등으로 낮추면 됨.
  * `deltaY`의 부호(±)만 사용해 노치당 일정한 스케일 변화를 보장(마우스/트랙패드별 deltaY 크기 차이 무시).
  */
-const WHEEL_ZOOM_FACTOR = 2.0;
+const WHEEL_ZOOM_FACTOR = 1.2;
 const ZOOM_KEY_FACTOR = 1.15;
 const PAN_STEP_PX = 64;
 

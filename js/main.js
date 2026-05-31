@@ -2,7 +2,7 @@ import { DDF } from "./iso8211.js";
 import { S57 } from "./s57.js";
 import { S52 } from "./s52.js?v=5";
 import { loadCatalog } from "./catalog.js";
-import { Renderer } from "./render.js?v=74";
+import { Renderer } from "./render.js?v=83";
 
 const ATLAS_BY_TABLE = {
   DAY_BRIGHT: "assets/rastersymbols-day.png",
@@ -1447,6 +1447,8 @@ function smoothZoomTo(targetScale, focusX, focusY) {
     if (!vp.isGlobeView()) vp.zoomAtScreen(focusX, focusY, next);
     else vp.zoomGlobeAtScreen(focusX, focusY, next);
     vp.syncAutoMode();
+    // 애니메이션 중에는 가벼운 패스(면·선만)로 그려 저사양에서도 부드럽게.
+    state.renderer._fastMode = true;
     draw();
     if (isMobileLayout()) scheduleMobileViewportSync();
     if (Math.abs(Math.log(vp.scale / tgt)) > 0.005) {
@@ -1456,6 +1458,8 @@ function smoothZoomTo(targetScale, focusX, focusY) {
       if (!vp.isGlobeView()) vp.zoomAtScreen(focusX, focusY, ft);
       else vp.zoomGlobeAtScreen(focusX, focusY, ft);
       _zoomAnimRaf = 0; _zoomAnimTarget = null;
+      // 멈춤: 전체 디테일(심볼·라벨 포함)로 마지막 한 프레임.
+      state.renderer._fastMode = false;
       draw();
     }
   };

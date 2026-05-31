@@ -1,5 +1,13 @@
 # 변경 기록
 
+## v0.2.6 (2026-05-31)
+
+- **다중 축척 면(DEPARE·LNDARE 등)**: 개략·상세 셀 면을 한 목록에서 CSCL 큰 순→작은 순으로 통합 칠하고, `supersededByFiner`로 개략 면을 빼지 않아 셀 경계에서 수심면이 들쭉날쭉 보이던 격자 불일치를 줄였습니다 (`render.js`).
+- **같은 표시우선순위 내 정렬**: 버킷 안에서 개략 셀을 먼저·상세 셀을 나중에 그려 상세 면·선이 개략 데이터 위에 일관되게 올라가게 했습니다 (`render.js`).
+- **해안선(COALNE) LS**: 겹침 생략을 COALNE **선**은 앵커 기준(`_shouldOmitForFinerOverlappingCell`), 그 외 선은 bbox 다점 기준(`_supersededByFinerForExtent`)으로 구분했습니다. LS 스트로크는 `MIN_SEG2_STROKE`로 면보다 촘촘한 픽셀 데시메이션을 적용했습니다 (`render.js`).
+- **부드러운 줌**: 애니메이션 중 `Renderer._fastMode`로 사운딩(SOUNDG)만 잠시 생략하고, 멈추면 전체 디테일로 마지막 한 프레임을 그려 저사양에서도 줌이 덜 끊기게 했습니다 (`main.js`, `render.js`).
+- **표기**: 앱 하단 크레딧·패키지 v0.2.6, 모듈 캐시 버스트(`index.html`, `main.js`).
+
 ## v0.2.5 (2026-05-31)
 
 - **도구줄**: 수심단위(미터/피트/패덤 순환)·경위도선·3D 지구본 체크박스를 제거했습니다. 수심은 기본 미터(`depthUnit`), 경위도선은 기본 끔(`showGraticule`), 축소 시 지구본 자동 전환은 기본 유지(`Viewport.auto3D`)입니다. 필요 시 개발자 콘솔에서 `state.renderer`·`state.renderer.vp`로 조정할 수 있습니다 (`index.html`, `main.js`).

@@ -20,9 +20,14 @@ function prioIndex(p) {
 const DASH = [6, 4], DOTT = [1, 3], EMPTY_DASH = [];
 /**
  * Min squared screen-space edge length (px²) for path decimation; see `_path()`.
- * 0.25 = 0.5 px 미만 정점만 제거 — 해안 미세 굴곡 보존.
+ * 0.25 = 0.5 px 미만 정점만 제거 — 면 채움·클립 등 대용량 폴리곤용.
  */
 const MIN_SEG2 = 0.25;
+/**
+ * LS(선) 스트로크 전용 — 면보다 촘촘히 두어 COALNE·등고선 등이 확대 시 덜 각져 보이게 함.
+ * (0.01 → 인접 정점 간격 ~0.1 px 미만일 때만 생략)
+ */
+const MIN_SEG2_STROKE = 0.01;
 /**
  * 겹치는 ENC 커버리지에서 컴파일 축척(CSCL)이 더 큰(숫자는 더 작음 = 더 상세한) 셀을 우선할 때
  * 허용 비율. IHO S-52 Presentation Library·ECDIS 관행(겹침 구간은 가용한 가장 큰 축척 데이터)과
@@ -145,6 +150,14 @@ function depthContourStandardDisplay(feat) {
   if (ac === "DEPCNT") return true;
   if (ac === "DEPARE" && feat.prim === 2) return true;
   return false;
+}
+
+/** 다중 축척 겹침에서 개략 셀 LS를 생략해도, 상세 셀에 COALNE가 없으면 해안이 뭉개져 보이므로 항상 그린다. */
+function isCoastlineLineForOverlap(r) {
+  if (!r || !r.feat) return false;
+  if (String(r.feat.acronym || "").toUpperCase() !== "COALNE") return false;
+  const pg = r.feat._pg;
+  return !!(pg && pg.type === "Line");
 }
 
 function isEncBoundaryFeat(feat) {
@@ -943,6 +956,10 @@ class Renderer {
     const resolved = [];
     for (let pi = 0; pi < PRIO_BUCKETS; pi++) {
       const b = buckets[pi];
+      // 같은 표시우선순위 안에서는 개략 셀(큰 CSCL)을 먼저, 상세 셀(작은 CSCL)을 나중에 그려
+      // 상세 셀의 정밀 해안선·면이 개략 셀의 단순화된 면 위에 얹히도록 한다(직선 가장자리 해소).
+      // 안정 정렬이라 CSCL이 같으면 원래(셀 로드) 순서 유지.
+      b.sort((p, q) => (p.cellCscl === q.cellCscl ? 0 : q.cellCscl - p.cellCscl));
       for (let j = 0; j < b.length; j++) resolved.push(b[j]);
     }
 
@@ -975,32 +992,26 @@ class Renderer {
         for (const ring of pg.rings) if (ring.length >= 6) satLandRings.push(ring);
       }
     };
-    // pass 1a: LNDARE 제외 면 — 겹침 셀에서 개략 면은 bbox 전 구간이 상세에 덮일 때만 생략.
-    // 생략이 줄어 겹쳐 그려지는 경우가 있으므로 CSCL 거친 순→상세 순으로 칠한다(LNDARE와 동일).
-    const areaRowsNonLnd = [];
-    for (const r of resolved) {
-      if (isEncBoundaryFeat(r.feat)) continue;
-      if (this._supersededByFinerForExtent(r)) continue;
-      const pg = r.feat._pg;
-      if (!pg || pg.type !== "Area") continue;
-      if (String(r.feat.acronym || "").toUpperCase() === "LNDARE") continue;
-      areaRowsNonLnd.push(r);
-    }
-    areaRowsNonLnd.sort((a, b) => csclSortKey(b) - csclSortKey(a));
-    for (const r of areaRowsNonLnd) drawAreaOps(r, false);
-    // pass 1b: LNDARE — 상세 축척에서 개략 셀 육지가 superseded로 통째 빠지면
-    // Natural Earth/바다색만 남는 구멍이 생기므로 **육지면은 겹침 생략하지 않음**.
-    // CSCL 큰(개략) → 작은(상세) 순으로 칠해 상세 LNDARE가 항상 위에 온다.
-    const lndRows = [];
+    // pass 1: 면 채움 — 육지(LNDARE)와 바다(DEPARE 등)를 **한 목록에서 CSCL 거친→상세 순**으로
+    // 통합해 칠한다. 이렇게 해야 상세 셀의 면(육지든 바다든)이 개략 셀의 단순화된 면 위에 얹혀,
+    // 개략 셀 육지가 상세 셀 바다를 직선으로 덮던 "뭉툭한 해안선"이 사라진다.
+    //  - supersededByFiner로 면을 생략하지 않는다(개략 면을 밑바탕으로 깔아 빈틈/구멍 방지).
+    //    겹쳐 그리는 오버드로가 늘지만, 상세 데이터가 항상 위에 와 해안선이 정확해진다.
+    //  - 같은 셀 안에서 육지·바다는 서로 겹치지 않으므로 순서 영향 없음.
+    const areaRows = [];
     for (const r of resolved) {
       if (isEncBoundaryFeat(r.feat)) continue;
       const pg = r.feat._pg;
       if (!pg || pg.type !== "Area") continue;
-      if (String(r.feat.acronym || "").toUpperCase() !== "LNDARE") continue;
-      lndRows.push(r);
+      areaRows.push(r);
     }
-    lndRows.sort((a, b) => csclSortKey(b) - csclSortKey(a));
-    for (const r of lndRows) drawAreaOps(r, true);
+    areaRows.sort((a, b) => csclSortKey(b) - csclSortKey(a));
+    // 모든 면을 개략(큰 CSCL)→상세(작은 CSCL) 순으로 빠짐없이 칠한다. 상세 셀 면이 항상 위에
+    // 얹혀 일관된다. (이전엔 "상세에 완전히 덮인 개략 바다 면 생략" 최적화를 넣었으나, 그 판정이
+    // 폴리곤 단위라 셀 경계에서 수심 면이 보이다 말다 하는 격자 불일치를 만들어 제거함.)
+    for (const r of areaRows) {
+      drawAreaOps(r, String(r.feat.acronym || "").toUpperCase() === "LNDARE");
+    }
     // pass 1.5: 위성 영상.
     //  - 상세 줌(Natural Earth 끔: scale>30000 또는 표시분모<MERCATOR_WORLD_OVERLAY_MIN_DENOM):
     //    "바다(DEPARE 등)가 아닌 영역"으로만 클립. 상세 셀의 DEPARE 경계가 해안과 맞춰 위성이 따라감.
@@ -1017,7 +1028,14 @@ class Renderer {
     const chblkRgb = this.s52.color("CHBLK");
     for (const r of resolved) {
       if (isEncBoundaryFeat(r.feat)) continue; // M_COVR/M_CSCL: 검정 윤곽 제거
-      if (this._supersededByFinerForExtent(r)) continue; // bbox 전 구간이 상세에 덮일 때만 생략
+      // 개략 셀의 거친 선 생략 판정.
+      //  - 일반 선: bbox 전 구간이 상세 셀에 덮일 때만 생략(보수적 — 빈틈 방지).
+      //  - 해안선(COALNE/SLCONS 등): 한 점(앵커/중심) 기준으로도 더 상세한 셀이 그 위치를 덮으면
+      //    생략. 상세 해안선이 있는 곳에 개략 셀의 직선 해안선이 겹쳐 그어지던 문제를 없앤다.
+      const omit = isCoastlineLineForOverlap(r)
+        ? this._shouldOmitForFinerOverlappingCell(r)
+        : this._supersededByFinerForExtent(r);
+      if (omit) continue;
       const pg = r.feat._pg;
       if (!pg || pg.type === "Point") continue;
       for (const op of r.ops) {
@@ -1033,12 +1051,14 @@ class Renderer {
     // pass 3: point symbols, soundings, text
     // 점 심볼(SY)은 `_shouldOmitForFinerOverlappingCell`(앵커). LS는 패스 2에서 bbox 다점 기준 생략.
     // SOUNDG는 bbox 한 점 필터를 쓰지 않음 — 광역 셀 사운딩이 통째 사라지는 것을 방지.
+    // 빠른 상호작용(줌·이동) 중에도 심볼·텍스트(지명·라벨)는 유지하고, 가장 수가 많아 비싼
+    // 수심 숫자(SOUNDG)만 _fastMode일 때 잠깐 생략한다(멈추면 전체 디테일로 다시 그림).
     for (const r of resolved) {
       for (const op of r.ops) {
         if (op.op === "SY") {
           if (this._shouldOmitForFinerOverlappingCell(r)) continue;
           this._symbolFeature(r.feat, op.sym, op.rot);
-        } else if (op.op === "SOUNDG" && this.showSoundings) {
+        } else if (op.op === "SOUNDG" && this.showSoundings && !this._fastMode) {
           this._soundings(r.feat);
         } else if (op.op === "TX" && this.showText) {
           // 텍스트는 셀 우선순위 필터(CSCL)를 적용하지 않는다 — 셀마다 서로 다른 라벨
@@ -2262,7 +2282,7 @@ class Renderer {
     const ctx = this.ctx;
     this._applyStroke(op);
     ctx.beginPath();
-    for (const ring of rings) this._path(ring);
+    for (const ring of rings) this._path(ring, MIN_SEG2_STROKE);
     ctx.stroke();
     ctx.setLineDash(EMPTY_DASH);
   }
@@ -2278,11 +2298,11 @@ class Renderer {
     else ctx.setLineDash(EMPTY_DASH);
   }
 
-  // Build a path, decimating vertices that land within ~1px of the previous
-  // one at the current scale (invisible detail). The final vertex is always
-  // emitted so rings stay closed.
+  // Build a path, decimating vertices that land within sqrt(minSeg2) px of the
+  // previous one (invisible detail). The final vertex is always emitted so
+  // rings stay closed. `minSeg2` defaults to MIN_SEG2 (면용); LS는 `_strokePolys`에서 더 촘촘히.
   // arr: flat Float64Array [x0,y0,x1,y1,…] in Mercator units.
-  _path(arr) {
+  _path(arr, minSeg2 = MIN_SEG2) {
     const ctx = this.ctx;
     const n = arr.length;
     let lx = this._sx(arr[0]), ly = this._sy(arr[1]);
@@ -2290,7 +2310,7 @@ class Renderer {
     for (let i = 2; i < n; i += 2) {
       const x = this._sx(arr[i]), y = this._sy(arr[i + 1]);
       const dx = x - lx, dy = y - ly;
-      if (i === n - 2 || dx * dx + dy * dy >= MIN_SEG2) {
+      if (i === n - 2 || dx * dx + dy * dy >= minSeg2) {
         ctx.lineTo(x, y);
         lx = x; ly = y;
       }

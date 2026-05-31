@@ -1,8 +1,8 @@
 import { DDF } from "./iso8211.js";
 import { S57 } from "./s57.js";
-import { S52 } from "./s52.js?v=4";
+import { S52 } from "./s52.js?v=5";
 import { loadCatalog } from "./catalog.js";
-import { Renderer } from "./render.js?v=57";
+import { Renderer } from "./render.js?v=73";
 
 const ATLAS_BY_TABLE = {
   DAY_BRIGHT: "assets/rastersymbols-day.png",
@@ -196,6 +196,12 @@ async function init() {
   state.renderer = new Renderer(canvas, state.s52, state.atlas.DAY_BRIGHT);
   // 3D 지구본 대륙 데이터 비동기 로드 완료 시 자동 재렌더링
   state.renderer.onWorldLandReady = () => { if (state.fitted) draw(); };
+  // 위성 타일 도착 시 재렌더링(여러 타일이 잇따라 오므로 rAF로 한 프레임에 모음)
+  let _satRaf = 0;
+  state.renderer.onSatelliteTileReady = () => {
+    if (_satRaf) return;
+    _satRaf = requestAnimationFrame(() => { _satRaf = 0; draw(); });
+  };
   // 모드 전환 크로스페이드 중 매 프레임 다시 그리도록 콜백 — Renderer가 진행 중인 transition 알려옴
   state.renderer.onTransitionFrame = () => requestAnimationFrame(() => draw());
 
@@ -457,7 +463,7 @@ function leafFileName(cellKey) {
 }
 
 function makeCellListRow(g) {
-  const row = document.createElement("label");
+  const row = document.createElement("div");
   row.className = "cellrow";
   const cb = document.createElement("input");
   cb.type = "checkbox";
@@ -475,6 +481,7 @@ function makeCellListRow(g) {
     focusViewportToCellName(g.name);
     setObjScopeTo(g.name);
   });
+  row.dataset.cellName = g.name;
   rows.set(g.name, { checkbox: cb, el: row });
   return row;
 }
@@ -562,15 +569,76 @@ function ensureCellRowAncestorsExpanded(rowEl) {
   }
 }
 
+/**
+ * 각 폴더 안에서 지도 뷰와 겹치는 셀·하위에 그런 셀이 있는 폴더를 위쪽으로 모읍니다.
+ * (하위 폴더부터 처리한 뒤 직계 자식 순서를 정렬)
+ */
+function reorderCellListByViewport() {
+  if (!state.renderer || !listEl) return;
+  const inView = new Set(namesIntersectingViewport());
+
+  function rowSortKey(row) {
+    return inView.has(row.dataset.cellName || "") ? 0 : 1;
+  }
+
+  function labelForSort(el) {
+    if (el.classList.contains("cellrow")) return el.dataset.cellName || "";
+    const dn = el.querySelector(":scope > .celltree-head .dirname");
+    return dn?.textContent || "";
+  }
+
+  function walk(container) {
+    const items = [...container.children].filter(
+      (c) => c.classList.contains("celltree-folder") || c.classList.contains("cellrow")
+    );
+    for (const el of items) {
+      if (el.classList.contains("celltree-folder")) {
+        const kids = el.querySelector(":scope > .celltree-children");
+        if (kids) walk(kids);
+      }
+    }
+    for (const el of items) {
+      if (!el.classList.contains("celltree-folder")) continue;
+      const kids = el.querySelector(":scope > .celltree-children");
+      let hi = false;
+      if (kids) {
+        for (const c of kids.children) {
+          if (c.classList.contains("cellrow")) {
+            if (inView.has(c.dataset.cellName || "")) { hi = true; break; }
+          } else if (c.classList.contains("celltree-folder") && c.dataset.branchInView === "1") {
+            hi = true;
+            break;
+          }
+        }
+      }
+      el.dataset.branchInView = hi ? "1" : "0";
+    }
+    items.sort((a, b) => {
+      const ka = a.classList.contains("cellrow") ? rowSortKey(a) : (a.dataset.branchInView === "1" ? 0 : 1);
+      const kb = b.classList.contains("cellrow") ? rowSortKey(b) : (b.dataset.branchInView === "1" ? 0 : 1);
+      if (ka !== kb) return ka - kb;
+      return labelForSort(a).localeCompare(labelForSort(b), undefined, { sensitivity: "base" });
+    });
+    for (const el of items) container.appendChild(el);
+  }
+
+  walk(listEl);
+}
+
 function applyCellListFilter() {
   const inp = document.getElementById("filter");
   const q = (inp?.value || "").trim().toUpperCase();
   const inView = new Set(state.renderer ? namesIntersectingViewport() : []);
   for (const [name, r] of rows) {
     const textOk = name.toUpperCase().includes(q);
-    const viewOk = inView.has(name);
-    r.el.style.display = textOk && viewOk ? "" : "none";
+    r.el.style.display = textOk ? "" : "none";
+    if (state.renderer) {
+      r.el.classList.toggle("out-of-viewport", !inView.has(name));
+    } else {
+      r.el.classList.remove("out-of-viewport");
+    }
   }
+  reorderCellListByViewport();
   const folders = [...listEl.querySelectorAll(".celltree-folder")];
   folders.sort((a, b) => (+b.dataset.depth || 0) - (+a.dataset.depth || 0));
   for (const f of folders) {
@@ -687,6 +755,22 @@ const objListEl = document.getElementById("objlist");
 const objStatEl = document.getElementById("objstat");
 const objPanelEl = document.getElementById("panelObjs");
 
+/** 오브젝트 패널: 상단 표시범주(지도)와 동일할 때 해당 클래스가 그려질 수 있는지 */
+function objClassVisibleAtViewerDispcat(acronym, minDisplayCat) {
+  const s52 = state.s52;
+  if (!s52) return true;
+  const lim = S52.displayCatRank(minDisplayCat);
+  const ac = String(acronym || "").trim().toUpperCase();
+  if (ac === "DEPCNT" && lim >= 1) return true;
+  if (ac === "DEPARE" && lim >= 1) return true;
+  const all = s52.lookups.get(acronym);
+  if (!all || !all.length) return true;
+  for (const lu of all) {
+    if (S52.displayCatRank(lu.displayCat) <= lim) return true;
+  }
+  return false;
+}
+
 function splitCsvLine(line) {
   const out = []; let cur = "", q = false;
   for (let i = 0; i < line.length; i++) {
@@ -782,13 +866,35 @@ async function refreshObjects() {
   let acronyms = showAll && objCatalog ? [...objCatalog.keys()] : [...stats.keys()];
   acronyms.sort((a, b) => (stats.get(b) || 0) - (stats.get(a) || 0) || a.localeCompare(b));
 
+  const matchDisp = document.getElementById("objMatchDispcat")?.checked;
+  const viewerDisp = document.getElementById("dispcat")?.value || "Standard";
+  if (matchDisp) {
+    acronyms = acronyms.filter((ac) => objClassVisibleAtViewerDispcat(ac, viewerDisp));
+  }
+
+  const tierOrder = [
+    { rank: 0, title: "Display Base", sub: "필수 · 최소 표시" },
+    { rank: 1, title: "Standard", sub: "기본 표시" },
+    { rank: 2, title: "Other / All", sub: "추가 정보" },
+  ];
+  const byTier = () => {
+    const m = new Map([[0, []], [1, []], [2, []]]);
+    for (const ac of acronyms) {
+      const r = state.s52 ? state.s52.minDisplayRankForObjectClass(ac) : 1;
+      const bucket = r >= 2 ? 2 : r;
+      m.get(bucket).push(ac);
+    }
+    return m;
+  };
+  const tiers = byTier();
+
   const frag = document.createDocumentFragment();
-  for (const ac of acronyms) {
+  function appendRow(ac) {
     const cnt = stats.get(ac) || 0;
     const name = (objCatalog && objCatalog.get(ac)) || "";
     const ko = (objCatalogKo && objCatalogKo.get(ac.toUpperCase())) || "";
-    if (q && !ac.toUpperCase().includes(q) && !name.toUpperCase().includes(q) && !(ko && ko.toUpperCase().includes(q))) continue;
-    const row = document.createElement("label");
+    if (q && !ac.toUpperCase().includes(q) && !name.toUpperCase().includes(q) && !(ko && ko.toUpperCase().includes(q))) return;
+    const row = document.createElement("div");
     row.className = "objrow" + (cnt === 0 ? " absent" : "");
     const cb = document.createElement("input");
     cb.type = "checkbox";
@@ -810,13 +916,40 @@ async function refreshObjects() {
     row.append(cb, acEl, nmWrap, cntEl);
     frag.appendChild(row);
   }
+
+  for (const { rank, title, sub } of tierOrder) {
+    const list = tiers.get(rank) || [];
+    let any = false;
+    for (const ac of list) {
+      const name = (objCatalog && objCatalog.get(ac)) || "";
+      const ko = (objCatalogKo && objCatalogKo.get(ac.toUpperCase())) || "";
+      if (q && !ac.toUpperCase().includes(q) && !name.toUpperCase().includes(q) && !(ko && ko.toUpperCase().includes(q))) continue;
+      any = true;
+      break;
+    }
+    if (!any) continue;
+    const hdr = document.createElement("div");
+    hdr.className = "obj-section";
+    hdr.innerHTML = `<span class="obj-section-title">${title}</span><span class="obj-section-sub">${sub}</span>`;
+    frag.appendChild(hdr);
+    for (const ac of list) appendRow(ac);
+  }
+
+  if (!frag.childNodes.length) {
+    const empty = document.createElement("div");
+    empty.className = "obj-empty";
+    empty.textContent = "조건에 맞는 오브젝트가 없습니다.";
+    frag.appendChild(empty);
+  }
+
   objListEl.replaceChildren(frag);
 
   const present = stats.size;
   const hiddenPresent = [...hidden].filter((h) => stats.has(h)).length;
   const who = scope ? scope.replace(/\.000$/i, "") : "표시 중 전체";
+  const dispNote = matchDisp ? ` · 목록=표시범주 ${viewerDisp === "Displaybase" ? "Base" : viewerDisp === "Other" ? "All/Other" : "Standard"}` : "";
   objStatEl.textContent =
-    `${who} — 포함 ${present}종 / 전체 ${objCatalogTotal || "?"}종 · 표시 ${present - hiddenPresent}종`;
+    `${who} — 포함 ${present}종 / 전체 ${objCatalogTotal || "?"}종 · 표시 ${present - hiddenPresent}종${dispNote}`;
 }
 
 function showTab(which) {
@@ -836,6 +969,8 @@ document.getElementById("objscope").addEventListener("change", (e) => {
 });
 document.getElementById("objfilter").addEventListener("input", refreshObjects);
 document.getElementById("objShowAll").addEventListener("change", refreshObjects);
+const objMatchDispcatEl = document.getElementById("objMatchDispcat");
+if (objMatchDispcatEl) objMatchDispcatEl.addEventListener("change", refreshObjects);
 document.getElementById("objAll").addEventListener("click", () => {
   state.renderer.hiddenClasses.clear(); draw(); refreshObjects();
 });
@@ -1049,24 +1184,102 @@ async function loadFromUrl(url) {
   }
 }
 
-// ---- view options ----
-document.getElementById("palette").addEventListener("change", async (e) => {
-  const t = e.target.value;
+// ---- view options (색상표·표시범주·수심단위: 클릭 시 순환 + 아이콘 회전) ----
+const PALETTE_CYCLE_OPTIONS = [
+  { value: "DAY_BRIGHT", label: "DAY_BRIGHT" },
+  { value: "DAY_WHITEBACK", label: "DAY_WHITEBACK" },
+  { value: "DAY_BLACKBACK", label: "DAY_BLACKBACK" },
+  { value: "DUSK", label: "DUSK" },
+  { value: "NIGHT", label: "NIGHT" },
+];
+const DISPCAT_CYCLE_OPTIONS = [
+  { value: "Displaybase", label: "Base" },
+  { value: "Standard", label: "Standard" },
+  { value: "Other", label: "All / Other" },
+];
+const DEPTHUNIT_CYCLE_OPTIONS = [
+  { value: "m", label: "미터(m)" },
+  { value: "ft", label: "피트(ft)" },
+  { value: "fathom", label: "패덤(fm)" },
+];
+
+/**
+ * @param {string} id
+ * @param {{ value: string, label: string }[]} options
+ * @param {(value: string) => void | Promise<void>} onPick
+ */
+function wireToolbarCycle(id, options, onPick) {
+  const btn = document.getElementById(id);
+  if (!btn || btn.tagName !== "BUTTON") return;
+  const textEl = btn.querySelector(".cycle-text");
+  const icon = btn.querySelector(".cycle-icon");
+  if (!textEl || !icon) return;
+
+  const indexForValue = (v) => {
+    const i = options.findIndex((o) => o.value === v);
+    return i >= 0 ? i : 0;
+  };
+
+  let idx = indexForValue(btn.value || options[0].value);
+
+  const apply = () => {
+    const opt = options[idx];
+    btn.value = opt.value;
+    textEl.textContent = opt.label;
+  };
+  apply();
+
+  btn.addEventListener("click", async () => {
+    idx = (idx + 1) % options.length;
+    apply();
+    icon.classList.remove("spinning");
+    void icon.offsetWidth;
+    icon.classList.add("spinning");
+    const onAnimEnd = () => {
+      icon.classList.remove("spinning");
+      icon.removeEventListener("animationend", onAnimEnd);
+    };
+    icon.addEventListener("animationend", onAnimEnd);
+    await onPick(options[idx].value);
+  });
+}
+
+wireToolbarCycle("palette", PALETTE_CYCLE_OPTIONS, async (t) => {
   state.s52.setColorTable(t);
   if (!state.atlas[t]) state.atlas[t] = await loadImage(ATLAS_BY_TABLE[t]);
   state.renderer.atlas = state.atlas[t];
   draw();
 });
-document.getElementById("dispcat").addEventListener("change", (e) => { state.renderer.minDisplayCat = e.target.value; draw(); });
-document.getElementById("text").addEventListener("change", (e) => { state.renderer.showText = e.target.checked; draw(); });
-document.getElementById("sound").addEventListener("change", (e) => { state.renderer.showSoundings = e.target.checked; draw(); });
-document.getElementById("scamin").addEventListener("change", (e) => { state.renderer.respectScamin = e.target.checked; draw(); });
-document.getElementById("declutter").addEventListener("change", (e) => { state.renderer.declutter = e.target.checked; draw(); });
+wireToolbarCycle("dispcat", DISPCAT_CYCLE_OPTIONS, (v) => {
+  state.renderer.minDisplayCat = v;
+  draw();
+  refreshObjects();
+});
+wireToolbarCycle("depthunit", DEPTHUNIT_CYCLE_OPTIONS, (v) => {
+  state.renderer.depthUnit = v;
+  draw();
+});
 document.getElementById("globe3d").addEventListener("change", (e) => {
   const vp = state.renderer.vp;
   vp.auto3D = e.target.checked;
   if (!vp.auto3D && vp.mode === "globe") vp.exitGlobe();
   else if (vp.auto3D) vp.syncAutoMode();
+  draw();
+});
+// 버드뷰(기울기) 슬라이더 — 현재 UI에서 숨김(요소 없으면 no-op). 기능은 보존.
+(() => {
+  const tiltEl = document.getElementById("tilt");
+  const tiltVal = document.getElementById("tilt-val");
+  if (!tiltEl) return;
+  tiltEl.addEventListener("input", (e) => {
+    const deg = +e.target.value || 0;
+    if (tiltVal) tiltVal.textContent = `${deg}°`;
+    state.renderer.setTilt(deg);
+  });
+})();
+// 위성지도(육지) 오버레이 토글
+document.getElementById("satellite").addEventListener("change", (e) => {
+  state.renderer.showSatellite = e.target.checked;
   draw();
 });
 document.getElementById("grid").addEventListener("change", (e) => {
@@ -1078,8 +1291,6 @@ document.getElementById("graticule").addEventListener("change", (e) => {
   state.renderer.showGraticule = e.target.checked;
   draw();
 });
-document.getElementById("scaledisp").addEventListener("change", (e) => { state.renderer.scaleDisplay = e.target.checked; draw(); });
-document.getElementById("depthunit").addEventListener("change", (e) => { state.renderer.depthUnit = e.target.value; draw(); });
 
 document.getElementById("sidebarVisible").addEventListener("change", (e) => {
   document.body.classList.toggle("sidebar-collapsed", !e.target.checked);
@@ -1088,11 +1299,11 @@ document.getElementById("sidebarVisible").addEventListener("change", (e) => {
 
 // ---- pan & zoom + click-to-toggle a cell on the grid ----
 /**
- * 마우스 휠 한 노치당 확대/축소 배율.
- * 한 노치당 약 20% 수준(이전 2배보다 촘촘함). 더 세밀히 원하면 1.15 등으로 낮추면 됨.
- * `deltaY`의 부호(±)만 사용해 노치당 일정한 스케일 변화를 보장(마우스/트랙패드별 deltaY 크기 차이 무시).
+ * 마우스 휠: 구글 어스처럼 스크롤량(속도)에 비례해 log-스케일이 변하고, 커서 아래 지점이 유지됨.
+ * `deltaMode`·Ctrl+휠(브라우저 배율)을 대략 보정한다.
  */
-const WHEEL_ZOOM_FACTOR = 1.2;
+const WHEEL_ZOOM_EXP_SENS = 0.00235;
+const WHEEL_ZOOM_EXP_CAP = 3.25;
 const ZOOM_KEY_FACTOR = 1.15;
 const PAN_STEP_PX = 64;
 
@@ -1185,7 +1396,17 @@ function startGlobeSpinFromDragVelocity() {
 }
 
 let dragging = false, moved = false, startX = 0, startY = 0, lastX = 0, lastY = 0;
+// Alt(또는 가운데 버튼)+드래그면 버드뷰 기울기 조작 모드(구글 어스 류). 일반 드래그는 팬/회전.
+let tiltDragging = false;
+/** 버드뷰 틸트 값을 툴바 슬라이더·라벨에 동기화(Alt+드래그로 바뀐 값을 UI에 반영). */
+function syncTiltSlider(deg) {
+  const el = document.getElementById("tilt");
+  const val = document.getElementById("tilt-val");
+  if (el) el.value = String(Math.round(deg));
+  if (val) val.textContent = `${Math.round(deg)}°`;
+}
 canvas.addEventListener("mousedown", (e) => {
+  // (버드뷰 Alt+드래그는 현재 비활성화 — 기능 코드는 보존하되 진입만 막음)
   stopGlobeSpin();
   resetGlobeDragVelocity();
   dragging = true; moved = false;
@@ -1193,6 +1414,7 @@ canvas.addEventListener("mousedown", (e) => {
   state.renderer.beginPan();
 });
 window.addEventListener("mouseup", () => {
+  if (tiltDragging) { tiltDragging = false; return; }
   if (!dragging) return;
   dragging = false;
   const vp = state.renderer?.vp;
@@ -1203,6 +1425,16 @@ window.addEventListener("mouseup", () => {
   }
 });
 window.addEventListener("mousemove", (e) => {
+  if (tiltDragging) {
+    // 위로 끌면 더 비스듬히(기울기 증가), 아래로 끌면 평면으로. 픽셀당 0.4°.
+    const dy = e.clientY - lastY;
+    lastX = e.clientX; lastY = e.clientY;
+    const cur = state.renderer._tiltDeg || 0;
+    const next = Math.max(0, Math.min(60, cur - dy * 0.4));
+    state.renderer.setTilt(next);
+    syncTiltSlider(next);
+    return;
+  }
   if (!dragging) return;
   if (Math.abs(e.clientX - startX) + Math.abs(e.clientY - startY) > 2) moved = true;
   const vp = state.renderer.vp;
@@ -1237,14 +1469,16 @@ function smoothZoomTo(targetScale, focusX, focusY) {
     const next = vp.clampScaleForUserZoom(cur * Math.pow(tgt / cur, k));
     // 마우스 포커스 픽셀이 가리키는 지점을 유지하며 확대(머케이터에서만)
     if (!vp.isGlobeView()) vp.zoomAtScreen(focusX, focusY, next);
-    else vp.scale = next;
+    else vp.zoomGlobeAtScreen(focusX, focusY, next);
     vp.syncAutoMode();
     draw();
     if (isMobileLayout()) scheduleMobileViewportSync();
     if (Math.abs(Math.log(vp.scale / tgt)) > 0.005) {
       _zoomAnimRaf = requestAnimationFrame(step);
     } else {
-      vp.scale = vp.clampScaleForUserZoom(tgt);
+      const ft = vp.clampScaleForUserZoom(tgt);
+      if (!vp.isGlobeView()) vp.zoomAtScreen(focusX, focusY, ft);
+      else vp.zoomGlobeAtScreen(focusX, focusY, ft);
       _zoomAnimRaf = 0; _zoomAnimTarget = null;
       draw();
     }
@@ -1252,11 +1486,21 @@ function smoothZoomTo(targetScale, focusX, focusY) {
   _zoomAnimRaf = requestAnimationFrame(step);
 }
 
+/** @param {WheelEvent} e */
+function wheelScaleMultiplierFromEvent(e) {
+  let dy = e.deltaY;
+  if (e.deltaMode === 1) dy *= 16;
+  else if (e.deltaMode === 2) dy *= 120;
+  if (e.ctrlKey) dy *= 2.5;
+  const k = Math.min(WHEEL_ZOOM_EXP_CAP, Math.max(-WHEEL_ZOOM_EXP_CAP, -WHEEL_ZOOM_EXP_SENS * dy));
+  return Math.exp(k);
+}
+
 canvas.addEventListener("wheel", (e) => {
   e.preventDefault();
   const vp = state.renderer.vp;
   const base = _zoomAnimTarget || vp.scale;
-  let target = base * (e.deltaY < 0 ? WHEEL_ZOOM_FACTOR : 1 / WHEEL_ZOOM_FACTOR);
+  let target = base * wheelScaleMultiplierFromEvent(e);
   // ── Globe ↔ Mercator 임계 스냅 ──
   // 휠 한 번이 globe→mercator 전환선을 한꺼번에 가로지르지 않도록 임계 scale에서 일단 멈춤.
   // 한 번 더 굴리면 모드가 바뀌어 계속 줌. 결과: 모드 전환과 스케일 점프가 분리되어 매끄럽게 보임.
@@ -1377,16 +1621,18 @@ window.addEventListener("keydown", (e) => {
   draw();
   if (isMobileLayout()) scheduleMobileViewportSync();
 });
-// click a grid rectangle to toggle that cell
+// 셀 격자(grid) 표시 중: 지도 클릭은 격자 포커스(목록·윤곽 강조)만 바꾼다.
+// 셀·오브젝트 표시 여부는 좌측 셀 목록 체크박스에서만 변경한다(지도 클릭으로 숨김/표시 금지).
 canvas.addEventListener("click", (e) => {
   if (moved) return;
+  if (!state.renderer.showGrid) return;
   const rect = canvas.getBoundingClientRect();
   const mx = e.clientX - rect.left, my = e.clientY - rect.top;
   const hit = pickCell(mx, my);
   if (hit) {
     state.renderer.gridFocusName = hit;
     syncCellListFocus(false);
-    setCellVisible(hit, !state.renderer.cells.get(hit).visible, false);
+    draw();
   }
 });
 
@@ -1438,8 +1684,7 @@ canvas.addEventListener("touchmove", (e) => {
     const newScale = vp.clampScaleForUserZoom(Math.min(8e7, Math.max(lo, pinch.scale * factor)));
     const cx = ((t0.clientX + t1.clientX) / 2) - rect.left;
     const cy = ((t0.clientY + t1.clientY) / 2) - rect.top;
-    // 지구본 모드에서는 머케이터 기준 zoomAtScreen이 중심·회전을 망가뜨리므로 축척만 조절
-    if (vp.isGlobeView()) vp.scale = newScale;
+    if (vp.isGlobeView()) vp.zoomGlobeAtScreen(cx, cy, newScale);
     else vp.zoomAtScreen(cx, cy, newScale);
     vp.syncAutoMode();
     if (Math.abs(factor - 1) > 0.02) moved = true;

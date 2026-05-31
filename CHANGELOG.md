@@ -1,7 +1,24 @@
 # 변경 기록
 
+## v0.2.4 (2026-05-31)
+
+- **SCAMAX(축척)**: S-57과 동일하게 `SCAMIN`만이 아니라 `SCAMAX`도 적용해, 과도하게 확대했을 때(표시 분모가 SCAMAX보다 작을 때) 숨겨야 할 지물이 남지 않도록 함 (`render.js`, 문서).
+- **장애물 점심볼(광역)**: 표시 분모가 약 1:4.5만 이상(축소 뷰)일 때만 `ISODGR`·`OBSTRN`·`WRECKS`·`UWTROC` 심볼을 화면 픽셀 거리로 띄엄 그려 연안 핑크·검정 과밀을 완화; 확대 시에는 기존처럼 전부 표시 (`render.js`).
+- **장애물 심볼(OBSTRN/UDWHAZ)**: `VALSOU`가 없을 때마다 `ISODGR01`(자홍 고립 위험)로 그리던 것을, 수심이 안전수심 이하로 **확정**된 경우와 `WRECKS`·`UWTROC`만 고립 위험으로 두고 그 외는 `OBSTRN01`로 표시해 연안 핑크 과밀을 완화 (`s52.js`).
+- **휠 줌(구글 어스 UX)**: 스크롤량에 비례해 log-스케일로 확대·축소(`deltaMode`·Ctrl 휠 보정); 부드러운 줌 애니메이션은 유지. **3D 지구본**에서도 커서 아래 지점을 고정한 채 축척만 바뀌도록 역투영·정렬(`globePickLonLatFromScreen`, `zoomGlobeAtScreen`). 핀치 줌도 지구본에서 동일하게 커서(두 손 중심) 기준(`main.js`, `render.js`).
+- **지도 클릭**: 셀 격자 표시 중에도 지도 클릭으로 셀 on/off를 바꾸지 않음 — 표시 여부는 좌측 셀 목록 체크박스에서만 변경; 격자 모드에서는 클릭한 셀 포커스·목록 동기화만 유지 (`main.js`).
+- **3D 지구본·셀 격자**: ENC 축척 밴드별 색(`BAND_COLORS`)으로 셀 경계를 그려 한반도 등 겹침 구역에서도 셀을 구분하기 쉽게 함; 포커스 셀은 흰 외곽 후 밴드색 이중선. 경로형 셀 키는 파일명만으로 밴드 판별(`bandOf`, `render.js`).
+- **LNDARE(육지면)**: 다중 축척 겹침에서 `supersededByFiner`로 개략 셀 LNDARE까지 빠지면 상세 셀에 육지 폴리곤이 없는 구간에 Natural Earth·바다색만 남던 문제를, LNDARE는 겹침 생략하지 않고 CSCL이 거친 순→상세 순으로 칠해 상세 ENC 육지가 위에 오게 수정 (`render.js`, `main.js` 캐시 버스트).
+- **Natural Earth 개략 육지**: 표시 분모가 약 1:280만 미만·`vp.scale>30000`·또는 **뷰포트와 겹치는 표시 중 ENC 셀이 있으면** Natural Earth를 끔 — 개략 지도와 ENC를 배타적으로만 표시; 위성 클립도 동일 (`_mercViewportIntersectsDisplayedEncCell`, `render.js`).
+- **오브젝트 패널**: S-52 `display-cat`(chartsymbols.xml) 기준으로 Display Base / Standard / Other 구간 헤더로 목록을 나눔;「표시범주에 맞춰 목록 축소」로 상단 Base·Standard·All/Other 선택과 동일하게 그려질 수 있는 클래스만 남김 (`s52.js`, `main.js`, `index.html`).
+- **좌측 목록**: 셀·객체 행을 `<div>`로 두어 행만 클릭할 때는 체크박스가 바뀌지 않고, 체크박스를 직접 눌렀을 때만 on/off 되도록 수정 (`main.js`).
+- **셀 목록**: 지도 뷰와 겹치는 항목을 각 폴더 안에서 위쪽으로 정렬 (`reorderCellListByViewport`, `main.js`).
+- **도구줄**: 색상표·표시범주·수심단위를 `<select>` 대신 클릭 시 옵션 순환(↻ 아이콘 회전 애니메이션)으로 전환 (`index.html`, `main.js`).
+- **표기**: 앱 하단 크레딧·패키지 v0.2.4, `main.js` 캐시 버스트(`index.html`).
+
 ## v0.2.3 (2026-05-31)
 
+- **셀 목록**: 뷰포트 밖 셀도 목록에 남기고 흐리게 표시해, 지도에 보이는 영역과 겹치는 항목을 구분 (`main.js`, `index.html`).
 - **표기**: 앱 하단 크레딧 및 패키지 버전을 v0.2.3 (2026.05.31)으로 갱신, 모듈 캐시 버스트(`index.html`, `main.js`).
 - **다중 축척**: 면·선에도 위치별 최상세 CSCL 기준 생략(`supersededByFiner`)으로 해안선 이중 그리기·면 누적 완화; SOUNDG는 bbox 한 점 필터를 제거해 광역 셀 사운딩 소실 방지 (`render.js`).
 - **사운딩**: `projectFeature`가 `feat.soundings`를 비운 뒤에도 `_hasSoundings`로 렌더 통과·표시범주 면제가 유지되게 해 팬/줌 후 사운딩이 사라지던 문제 수정 (`render.js`).

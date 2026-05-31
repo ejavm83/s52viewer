@@ -13,6 +13,30 @@
     background: #1c2733; color: #d4eaee; flex-wrap: wrap;
   }
   #toolbar label { font-size: 13px; display: flex; align-items: center; gap: 4px; }
+  /* 색상표·표시범주·수심단위 — 클릭 시 옵션 순환 */
+  #toolbar .toolbar-cycle {
+    display: inline-flex; align-items: center; justify-content: space-between; gap: 8px;
+    min-width: 9.5em; max-width: 14em; padding: 4px 8px; margin: 0;
+    font: 600 12px "Segoe UI", sans-serif; color: #d4eaee; cursor: pointer;
+    background: #233140; border: 1px solid #2a3742; border-radius: 4px;
+    text-align: left;
+  }
+  #toolbar .toolbar-cycle:hover { background: #2e4255; }
+  #toolbar .toolbar-cycle .cycle-text {
+    flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  #toolbar .toolbar-cycle .cycle-icon {
+    flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center;
+    width: 1.1em; height: 1.1em; font-size: 14px; line-height: 1; opacity: 0.9;
+    transform-origin: 50% 50%;
+  }
+  #toolbar .toolbar-cycle .cycle-icon.spinning {
+    animation: toolbar-cycle-spin 0.45s ease-out;
+  }
+  @keyframes toolbar-cycle-spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
   #toolbar h1 { font-size: 15px; margin: 0 8px 0 0; font-weight: 600; }
   #focused-cell {
     display: none;
@@ -84,8 +108,16 @@
     padding-left: 8px; margin-left: 7px;
     border-left: 1px solid #2a3742;
   }
+  .celllist-view-legend {
+    margin: 0 0 2px; font-size: 10px; line-height: 1.35; color: #6d8f9a;
+  }
   .cellrow { display: flex; align-items: center; gap: 6px; padding: 2px 8px; cursor: pointer; white-space: nowrap; }
   .cellrow:hover { background: #1c2733; }
+  /* 지도 뷰포트 밖 셀 — 목록에서만 흐리게(뷰 이동·줌 시 갱신, 검색과 무관) */
+  .cellrow.out-of-viewport { opacity: 0.42; }
+  .cellrow.out-of-viewport:hover { opacity: 0.62; }
+  .cellrow.out-of-viewport .cellname { color: #7a8f96; }
+  .cellrow.focus.out-of-viewport { opacity: 0.78; }
   .cellrow.on { background: #1f3247; }
   .cellrow.focus {
     box-shadow: inset 3px 0 0 #3498db;
@@ -110,9 +142,35 @@
   .objrow .ko { color: #6d8f9a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
   .objrow .cnt { margin-left: auto; color: #6f8088; padding-left: 6px; flex-shrink: 0; align-self: center; }
   .objrow.absent { opacity: .38; }
+  .obj-section {
+    position: sticky; top: 0; z-index: 1;
+    padding: 6px 8px 4px; margin-top: 4px;
+    background: linear-gradient(180deg, #1a2430 0%, #151d26 100%);
+    border-top: 1px solid #2a3742; border-bottom: 1px solid #243240;
+    font-size: 11px; line-height: 1.25;
+  }
+  .obj-section:first-child { margin-top: 0; }
+  .obj-section-title { font-weight: 700; color: #7ec8f7; margin-right: 8px; }
+  .obj-section-sub { color: #6d8a94; }
+  .obj-empty { padding: 12px 10px; font-size: 12px; color: #7a939c; text-align: center; }
   #stage { flex: 1; position: relative; background: #73b6ef; overflow: hidden; }
   #chart { position: absolute; inset: 0; cursor: grab; }
   #chart:active { cursor: grabbing; }
+  /* 버드뷰 하늘 — 기본 숨김(틸트 0). JS가 기울기에 따라 높이·표시를 제어 */
+  #sky {
+    position: absolute; left: 0; right: 0; top: 0; height: 0;
+    pointer-events: none; z-index: 0; display: none;
+    background: linear-gradient(to bottom,
+      #0a1830 0%, #16335c 26%, #2f5d8f 55%, #6f97bd 82%, #b9cdd8 100%);
+  }
+  /* 버드뷰 거리 안개 — 위(먼 곳)로 갈수록 차트를 옅게 덮어 깊이감 부여 */
+  #haze {
+    position: absolute; inset: 0; pointer-events: none; z-index: 5; display: none;
+    background: linear-gradient(to bottom,
+      rgba(201,219,232,0.85) 0%, rgba(201,219,232,0.45) 14%,
+      rgba(201,219,232,0.12) 32%, rgba(201,219,232,0) 50%);
+  }
+  body.birdview #sky, body.birdview #haze { display: block; }
   /* 축척 오버레이 */
   #scale-bar {
     position: absolute; left: 10px; bottom: 10px; z-index: 6; pointer-events: none;
@@ -224,36 +282,24 @@
       <input type="file" id="folder" class="hidden-file" webkitdirectory directory multiple />
     </span>
     <label>색상표:
-      <select id="palette">
-        <option value="DAY_BRIGHT">DAY_BRIGHT</option>
-        <option value="DAY_WHITEBACK">DAY_WHITEBACK</option>
-        <option value="DAY_BLACKBACK">DAY_BLACKBACK</option>
-        <option value="DUSK">DUSK</option>
-        <option value="NIGHT">NIGHT</option>
-      </select>
+      <button type="button" class="toolbar-cycle" id="palette" value="DAY_BRIGHT" title="클릭하여 색상표 순환">
+        <span class="cycle-text">DAY_BRIGHT</span><span class="cycle-icon" aria-hidden="true">↻</span>
+      </button>
     </label>
     <label>표시범주:
-      <select id="dispcat">
-        <option value="Displaybase">Base</option>
-        <option value="Standard" selected>Standard</option>
-        <option value="Other">All / Other</option>
-      </select>
+      <button type="button" class="toolbar-cycle" id="dispcat" value="Standard" title="클릭하여 표시범주 순환 (Base → Standard → All/Other)">
+        <span class="cycle-text">Standard</span><span class="cycle-icon" aria-hidden="true">↻</span>
+      </button>
     </label>
-    <label><input type="checkbox" id="scaledisp" checked /> 원근간략화</label>
     <label>수심단위:
-      <select id="depthunit">
-        <option value="m" selected>미터(m)</option>
-        <option value="ft">피트(ft)</option>
-        <option value="fathom">패덤(fm)</option>
-      </select>
+      <button type="button" class="toolbar-cycle" id="depthunit" value="m" title="클릭하여 수심 단위 순환">
+        <span class="cycle-text">미터(m)</span><span class="cycle-icon" aria-hidden="true">↻</span>
+      </button>
     </label>
     <label><input type="checkbox" id="grid" /> 셀 격자</label>
     <label><input type="checkbox" id="graticule" /> 경위도선</label>
-    <label><input type="checkbox" id="text" checked /> 라벨</label>
-    <label><input type="checkbox" id="sound" checked /> 수심</label>
-    <label><input type="checkbox" id="scamin" checked /> 축척억제</label>
-    <label title="수심·텍스트 겹침 완화 및 교통·조류 방향 화살표 중복 제거(같은 화면 격자당 1개)"><input type="checkbox" id="declutter" checked /> 겹침제거</label>
     <label title="충분히 축소하면 자동으로 3D 지구본으로 전환. 확대하면 다시 2D 머케이터로 복귀."><input type="checkbox" id="globe3d" checked /> 3D 지구본</label>
+    <label title="육지 영역에 위성 영상을 겹쳐 표시(바다는 S-52 차트 유지). 영상: Esri World Imagery."><input type="checkbox" id="satellite" /> 위성지도</label>
     <label><input type="checkbox" id="sidebarVisible" /> 셀 목록(좌측)</label>
   </div>
   <div id="main">
@@ -264,7 +310,8 @@
       </div>
       <div id="panelCells" class="panel">
         <div class="pad">
-          <input type="text" id="filter" placeholder="셀 검색(지도에 보이는 영역만 목록에 표시)…" />
+          <p class="celllist-view-legend">지도와 겹치는 셀은 각 폴더 안에서 위쪽에 모이고 선명하게, 화면 밖 셀은 아래·흐리게 표시됩니다.</p>
+          <input type="text" id="filter" placeholder="셀 이름 검색…" />
           <div class="btns">
             <button id="showVisible">보이는영역 표시</button>
             <button id="hideAll">모두 숨김</button>
@@ -278,6 +325,9 @@
           <select id="objscope"><option value="">표시 중 전체(합산)</option></select>
           <input type="text" id="objfilter" placeholder="오브젝트 검색(약어/이름)…" />
           <label style="font-size:11px;"><input type="checkbox" id="objShowAll" /> 전체 카탈로그 보기(미포함 포함)</label>
+          <label style="font-size:11px;" title="상단 도구줄 표시범주(Base/Standard/All)와 같을 때만 그려질 수 있는 오브젝트만 목록에 남깁니다.">
+            <input type="checkbox" id="objMatchDispcat" /> 표시범주에 맞춰 목록 축소
+          </label>
           <div class="btns">
             <button id="objAll">모두 표시</button>
             <button id="objNone">모두 숨김</button>
@@ -289,7 +339,11 @@
     </div>
     <div id="sidebar-resizer" role="separator" aria-orientation="vertical" aria-label="셀 목록 패널 너비 조절" title="드래그하여 너비 조절"></div>
     <div id="stage">
+      <!-- 버드뷰 하늘(차트 위쪽 지평선 너머). 기울기에 따라 높이가 커짐 -->
+      <div id="sky" aria-hidden="true"></div>
       <canvas id="chart"></canvas>
+      <!-- 버드뷰 거리 안개(먼 쪽=위로 갈수록 흐려짐) -->
+      <div id="haze" aria-hidden="true"></div>
       <div id="scale-bar" aria-hidden="true">
         <span class="label" id="scale-bar-label"></span>
         <div class="track" id="scale-bar-track"></div>
@@ -300,9 +354,9 @@
     <div id="status">초기화 중…</div>
     <h1 class="mobile-app-title">S-52 ENC Viewer</h1>
     <a href="about.html" class="doc-page doc-page-mobile">프로그램 설명</a>
-    <div id="app-credit">제작: 지엠티 김길용 수석 · v0.2.3 (2026.05.31)</div>
+    <div id="app-credit">제작: 지엠티 김길용 수석 · v0.2.4 (2026.05.31)</div>
   </div>
   <div id="map-loading" hidden>로딩 중…</div>
-  <script type="module" src="js/main.js?v=68"></script>
+  <script type="module" src="js/main.js?v=87"></script>
 </body>
 </html>

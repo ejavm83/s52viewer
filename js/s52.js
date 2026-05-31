@@ -96,6 +96,40 @@ class S52 {
     }
   }
 
+  /**
+   * IHO PL `display-cat` → 순위(낮을수록 Base에 가깝다). `Renderer.catAllowed`와 동일 계열.
+   * @param {string} [cat]
+   * @returns {number}
+   */
+  static displayCatRank(cat) {
+    const rank = { Displaybase: 0, Standard: 1, Other: 2, Mariners: 3 };
+    const c = String(cat ?? "").trim();
+    if (!c) return 1;
+    if (rank[c] !== undefined) return rank[c];
+    if (/display\s*base/i.test(c)) return 0;
+    return 1;
+  }
+
+  /**
+   * 객체 클래스(약어)에 대해 chartsymbols.xml lookup 전체 중 가장 엄격한(낮은) 표시범주 순위.
+   * 오브젝트 패널에서 Base / Standard / Other 구간으로 묶을 때 사용.
+   * 수심 등고선(DEPCNT)은 PL상 Other인 경우가 많아, 지도 렌더와 같이 Standard 구간으로 본다.
+   * @param {string} acronym
+   * @returns {number} 0=Displaybase, 1=Standard, 2=Other, 3=Mariners
+   */
+  minDisplayRankForObjectClass(acronym) {
+    const ac = String(acronym || "").trim().toUpperCase();
+    if (ac === "DEPCNT") return 1;
+    const all = this.lookups.get(acronym);
+    if (!all || !all.length) return 1;
+    let minR = 99;
+    for (const lu of all) {
+      const r = S52.displayCatRank(lu.displayCat);
+      if (r < minR) minR = r;
+    }
+    return minR === 99 ? 1 : minR;
+  }
+
   setColorTable(name) {
     if (this.colorTables.has(name)) this.currentTable = name;
   }
@@ -242,8 +276,24 @@ class S52 {
     }
     if (proc.startsWith("SOUNDG")) { ops.push({ op: "SOUNDG" }); return; }
     if (proc.startsWith("LIGHTS")) { return this._lights(feat, ops); }
-    if (proc.startsWith("OBSTRN") || proc.startsWith("WRECKS") || proc.startsWith("UDWHAZ")) {
-      ops.push({ op: "SY", sym: "DANGER01" }); return;
+    // 수중 위험물 — UDWHAZ 계열 조건부 기호: OBSTRN04(장애물)·UWTROC03(수중암)·
+    // WRECKS02·UDWHAZ(난파선/일반). S-52 UDWHAZ를 단순화해, 수심(VALSOU)이 안전수심보다
+    // 얕거나 불명이면 **고립 위험**(ISODGR01 — 점선 자홍 원 + ×, CARIS의 그 동그란 객체)으로,
+    // 충분히 깊으면 평범한 장애물/수중암 심볼로 표기한다. (UWTROC는 기존에 미처리였음.)
+    if (proc.startsWith("OBSTRN") || proc.startsWith("WRECKS") ||
+        proc.startsWith("UDWHAZ") || proc.startsWith("UWTROC")) {
+      const vs = num(feat.attrs.VALSOU);
+      const ac = String(feat.acronym || "").toUpperCase();
+      const isRock = proc.startsWith("UWTROC") || ac === "UWTROC";
+      // VALSOU가 없을 때마다 ISODGR01(자홍 원+X)을 쓰면 양식·어구 등 일반
+      // OBSTRN이 전부 "고립 위험"처럼 보인다. 얕은 수심이 **확정**됐을 때와
+      // 난파선·암석(UWTROC)·미기재 난파선만 고립 위험으로 둔다.
+      let danger = vs !== null && vs <= this.safety;
+      if (!danger && vs === null) {
+        if (isRock || ac === "WRECKS" || proc.startsWith("WRECKS")) danger = true;
+      }
+      ops.push({ op: "SY", sym: danger ? "ISODGR01" : (isRock ? "UWTROC04" : "OBSTRN01") });
+      return;
     }
     if (proc.startsWith("DATCVR")) {
       // M_COVR/M_CSCL 외곽: S-52 PL은 CHBLK 선을 내지만, 본 뷰어는 render.js에서

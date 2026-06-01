@@ -6,8 +6,6 @@ import { Renderer } from "./render.js?v=83";
 
 const ATLAS_BY_TABLE = {
   DAY_BRIGHT: "assets/rastersymbols-day.png",
-  DAY_BLACKBACK: "assets/rastersymbols-day.png",
-  DAY_WHITEBACK: "assets/rastersymbols-day.png",
   DUSK: "assets/rastersymbols-dusk.png",
   NIGHT: "assets/rastersymbols-dark.png",
 };
@@ -338,7 +336,7 @@ function draw() {
     _rafPending = false;
     state.renderer.render();
     updateScaleBar();
-    applyCellListFilter();
+    syncCellListInViewportHighlight();
   });
 }
 
@@ -486,6 +484,7 @@ function makeCellListRow(g) {
   const cb = document.createElement("input");
   cb.type = "checkbox";
   cb.addEventListener("change", () => setCellVisible(g.name, cb.checked, false));
+  cb.addEventListener("click", (e) => e.stopPropagation());
   const dot = document.createElement("span");
   dot.className = "dot";
   dot.style.background = bandColor(g.name);
@@ -495,7 +494,8 @@ function makeCellListRow(g) {
   txt.textContent = leaf.replace(/\.000$/i, "");
   txt.title = `${g.name} — 1:${g.cscl || "?"}  [${g.minX.toFixed(2)},${g.minY.toFixed(2)}]→[${g.maxX.toFixed(2)},${g.maxY.toFixed(2)}]`;
   row.append(cb, dot, txt);
-  row.addEventListener("click", () => {
+  row.addEventListener("click", (e) => {
+    if (e.target === cb) return;
     focusViewportToCellName(g.name);
     setObjScopeTo(g.name);
   });
@@ -587,76 +587,13 @@ function ensureCellRowAncestorsExpanded(rowEl) {
   }
 }
 
-/**
- * 각 폴더 안에서 지도 뷰와 겹치는 셀·하위에 그런 셀이 있는 폴더를 위쪽으로 모읍니다.
- * (하위 폴더부터 처리한 뒤 직계 자식 순서를 정렬)
- */
-function reorderCellListByViewport() {
-  if (!state.renderer || !listEl) return;
-  const inView = new Set(namesIntersectingViewport());
-
-  function rowSortKey(row) {
-    return inView.has(row.dataset.cellName || "") ? 0 : 1;
-  }
-
-  function labelForSort(el) {
-    if (el.classList.contains("cellrow")) return el.dataset.cellName || "";
-    const dn = el.querySelector(":scope > .celltree-head .dirname");
-    return dn?.textContent || "";
-  }
-
-  function walk(container) {
-    const items = [...container.children].filter(
-      (c) => c.classList.contains("celltree-folder") || c.classList.contains("cellrow")
-    );
-    for (const el of items) {
-      if (el.classList.contains("celltree-folder")) {
-        const kids = el.querySelector(":scope > .celltree-children");
-        if (kids) walk(kids);
-      }
-    }
-    for (const el of items) {
-      if (!el.classList.contains("celltree-folder")) continue;
-      const kids = el.querySelector(":scope > .celltree-children");
-      let hi = false;
-      if (kids) {
-        for (const c of kids.children) {
-          if (c.classList.contains("cellrow")) {
-            if (inView.has(c.dataset.cellName || "")) { hi = true; break; }
-          } else if (c.classList.contains("celltree-folder") && c.dataset.branchInView === "1") {
-            hi = true;
-            break;
-          }
-        }
-      }
-      el.dataset.branchInView = hi ? "1" : "0";
-    }
-    items.sort((a, b) => {
-      const ka = a.classList.contains("cellrow") ? rowSortKey(a) : (a.dataset.branchInView === "1" ? 0 : 1);
-      const kb = b.classList.contains("cellrow") ? rowSortKey(b) : (b.dataset.branchInView === "1" ? 0 : 1);
-      if (ka !== kb) return ka - kb;
-      return labelForSort(a).localeCompare(labelForSort(b), undefined, { sensitivity: "base" });
-    });
-    for (const el of items) container.appendChild(el);
-  }
-
-  walk(listEl);
-}
-
 function applyCellListFilter() {
   const inp = document.getElementById("filter");
   const q = (inp?.value || "").trim().toUpperCase();
-  const inView = new Set(state.renderer ? namesIntersectingViewport() : []);
   for (const [name, r] of rows) {
     const textOk = name.toUpperCase().includes(q);
     r.el.style.display = textOk ? "" : "none";
-    if (state.renderer) {
-      r.el.classList.toggle("out-of-viewport", !inView.has(name));
-    } else {
-      r.el.classList.remove("out-of-viewport");
-    }
   }
-  reorderCellListByViewport();
   const folders = [...listEl.querySelectorAll(".celltree-folder")];
   folders.sort((a, b) => (+b.dataset.depth || 0) - (+a.dataset.depth || 0));
   for (const f of folders) {
@@ -666,6 +603,7 @@ function applyCellListFilter() {
     const subHit = [...kids.querySelectorAll(":scope > .celltree-folder")].some((sub) => sub.style.display !== "none");
     f.style.display = rowHit || subHit ? "" : "none";
   }
+  syncCellListInViewportHighlight();
 }
 function syncRow(name) {
   const r = rows.get(name);
@@ -745,6 +683,19 @@ function namesIntersectingViewport() {
     targets.push(g.name);
   }
   return targets;
+}
+
+/** 목록 순서는 유지한 채, 현재 지도와 겹치는 셀만 선명·벗어난 행은 흐리게(`out-of-viewport`). */
+function syncCellListInViewportHighlight() {
+  if (!listEl || rows.size === 0) return;
+  if (!state.renderer?.grid) {
+    for (const r of rows.values()) r.el.classList.remove("out-of-viewport");
+    return;
+  }
+  const inView = new Set(namesIntersectingViewport());
+  for (const [name, r] of rows) {
+    r.el.classList.toggle("out-of-viewport", !inView.has(name));
+  }
 }
 
 // bulk actions
@@ -853,6 +804,28 @@ function focusViewportToCellName(name) {
   draw();
   syncCellListFocus();
   if (isMobileLayout()) scheduleMobileViewportSync();
+}
+
+/** 상단 로고 클릭 시 — 문서·데스크톱 캡처용으로 쓰는 부산항·가덕도 프레이밍과 동일 범위로 이동 */
+function goToCaptureView() {
+  if (!state.renderer?.vp) return;
+  state.renderer.vp.fit(MOBILE_INITIAL_BOUNDS);
+  state.renderer.vp.applyZoomOutLimitAfterFit();
+  state.fitted = true;
+  draw();
+  setStatus("캡처용 화면(부산항·가덕도 일대)으로 이동했습니다.");
+  syncCellListInViewportHighlight();
+  if (isMobileLayout()) scheduleMobileViewportSync();
+}
+
+for (const el of document.querySelectorAll(".app-logo")) {
+  el.addEventListener("click", () => goToCaptureView());
+  el.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      goToCaptureView();
+    }
+  });
 }
 
 let objScopeFilled = false;
@@ -1204,11 +1177,9 @@ async function loadFromUrl(url) {
 
 // ---- view options (색상표·표시범주: 클릭 시 순환 + 아이콘 회전) ----
 const PALETTE_CYCLE_OPTIONS = [
-  { value: "DAY_BRIGHT", label: "DAY_BRIGHT" },
-  { value: "DAY_WHITEBACK", label: "DAY_WHITEBACK" },
-  { value: "DAY_BLACKBACK", label: "DAY_BLACKBACK" },
-  { value: "DUSK", label: "DUSK" },
-  { value: "NIGHT", label: "NIGHT" },
+  { value: "DAY_BRIGHT", label: "Day" },
+  { value: "DUSK", label: "Dusk" },
+  { value: "NIGHT", label: "Night" },
 ];
 const DISPCAT_CYCLE_OPTIONS = [
   { value: "Displaybase", label: "Base" },
@@ -1444,7 +1415,7 @@ window.addEventListener("mousemove", (e) => {
   } else {
     vp.cx -= dx / vp.scale; vp.cy += dy / vp.scale;
     state.renderer.previewPan(e.clientX - startX, e.clientY - startY);
-    if (moved) applyCellListFilter();
+    syncCellListInViewportHighlight();
   }
 });
 // 부드러운 줌 — 휠 한 번에 폭 점프하지 않고 짧은 애니메이션으로 보간(구글어스 UX).

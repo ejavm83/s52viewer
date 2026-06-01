@@ -38,6 +38,11 @@
     to { transform: rotate(360deg); }
   }
   #toolbar h1 { font-size: 15px; margin: 0 8px 0 0; font-weight: 600; }
+  #toolbar h1.app-logo {
+    cursor: pointer; user-select: none;
+    border-radius: 4px; padding: 2px 6px; margin: -2px 2px -2px -4px;
+  }
+  #toolbar h1.app-logo:hover { color: #fff; background: rgba(255,255,255,.06); }
   #focused-cell {
     display: none;
     font-size: 14px; font-weight: 700; letter-spacing: 0.02em;
@@ -113,7 +118,7 @@
   }
   .cellrow { display: flex; align-items: center; gap: 6px; padding: 2px 8px; cursor: pointer; white-space: nowrap; }
   .cellrow:hover { background: #1c2733; }
-  /* 지도 뷰포트 밖 셀 — 목록에서만 흐리게(뷰 이동·줌 시 갱신, 검색과 무관) */
+  /* 지도 뷰와 겹치지 않는 셀 — 목록 순서는 그대로, 흐리게만 구분 */
   .cellrow.out-of-viewport { opacity: 0.42; }
   .cellrow.out-of-viewport:hover { opacity: 0.62; }
   .cellrow.out-of-viewport .cellname { color: #7a8f96; }
@@ -212,6 +217,11 @@
       flex-shrink: 0;
       line-height: 1.2;
     }
+    #status-bar .mobile-app-title.app-logo {
+      cursor: pointer; user-select: none;
+      text-decoration: underline; text-underline-offset: 3px;
+      text-decoration-color: rgba(126,200,247,.45);
+    }
   }
   #app-credit {
     flex-shrink: 0; font-size: 11px; color: #7a939c; white-space: nowrap;
@@ -267,7 +277,7 @@
 </head>
 <body class="sidebar-collapsed">
   <div id="toolbar">
-    <h1>S-52 ENC Viewer</h1>
+    <h1 class="app-logo" tabindex="0" role="button" aria-label="캡처용 화면으로 이동" title="캡처용 화면(부산항·가덕도 일대)으로 이동">S-52 ENC Viewer</h1>
     <a href="about.html" class="doc-page">프로그램 설명</a>
     <span id="focused-cell" title="지도에서 마지막으로 포커스한 ENC 셀(.000)"></span>
     <span id="open-enc">
@@ -282,8 +292,8 @@
       <input type="file" id="folder" class="hidden-file" webkitdirectory directory multiple />
     </span>
     <label>색상표:
-      <button type="button" class="toolbar-cycle" id="palette" value="DAY_BRIGHT" title="클릭하여 색상표 순환">
-        <span class="cycle-text">DAY_BRIGHT</span><span class="cycle-icon" aria-hidden="true">↻</span>
+      <button type="button" class="toolbar-cycle" id="palette" value="DAY_BRIGHT" title="클릭하여 순환: Day → Dusk → Night">
+        <span class="cycle-text">Day</span><span class="cycle-icon" aria-hidden="true">↻</span>
       </button>
     </label>
     <label>표시범주:
@@ -303,7 +313,7 @@
       </div>
       <div id="panelCells" class="panel">
         <div class="pad">
-          <p class="celllist-view-legend">지도와 겹치는 셀은 각 폴더 안에서 위쪽에 모이고 선명하게, 화면 밖 셀은 아래·흐리게 표시됩니다.</p>
+          <p class="celllist-view-legend">목록 순서는 고정입니다. 현재 지도와 겹치는 셀은 선명하게, 화면 밖 셀은 같은 위치에서 흐리게 표시됩니다.</p>
           <input type="text" id="filter" placeholder="셀 이름 검색…" />
           <div class="btns">
             <button id="showVisible">보이는영역 표시</button>
@@ -345,11 +355,11 @@
   </div>
   <div id="status-bar">
     <div id="status">초기화 중…</div>
-    <h1 class="mobile-app-title">S-52 ENC Viewer</h1>
+    <h1 class="mobile-app-title app-logo" tabindex="0" role="button" aria-label="캡처용 화면으로 이동" title="캡처용 화면(부산항·가덕도 일대)으로 이동">S-52 ENC Viewer</h1>
     <a href="about.html" class="doc-page doc-page-mobile">프로그램 설명</a>
-    <div id="app-credit">제작: 지엠티 김길용 수석 · v0.2.9 (2026.05.31)</div>
+    <div id="app-credit">제작: 지엠티 김길용 수석 · v0.2.10 (2026.06.01)</div>
   </div>
   <div id="map-loading" hidden>로딩 중…</div>
-  <script type="module" src="js/main.js?v=101"></script>
+  <script type="module" src="js/main.js?v=105"></script>
 </body>
 </html>

@@ -2,7 +2,7 @@ import { DDF } from "./iso8211.js";
 import { S57 } from "./s57.js";
 import { S52 } from "./s52.js?v=5";
 import { loadCatalog } from "./catalog.js";
-import { Renderer } from "./render.js?v=83";
+import { Renderer } from "./render.js?v=89";
 
 const ATLAS_BY_TABLE = {
   DAY_BRIGHT: "assets/rastersymbols-day.png",
@@ -10,8 +10,13 @@ const ATLAS_BY_TABLE = {
   NIGHT: "assets/rastersymbols-dark.png",
 };
 
-/** 모바일 초기 뷰: 부산항·가덕도 일대 (데스크톱 캡처 화면과 유사한 위치·축척) */
-const MOBILE_INITIAL_BOUNDS = {
+/**
+ * 초기 뷰(모든 레이아웃 공통): 부산항·가덕도 일대.
+ * 전국 개략 뷰로 시작하면 화면에 겹치는 셀이 전부(=거의 모든 셀)라 시작 시 744셀을 통째 로드·
+ * 파싱하게 된다. 지역 뷰로 시작하면 화면 영역 셀 십여 개만 로드돼 시작·체감이 가볍다.
+ * (전국 보기는 'fitAll' 버튼으로 언제든 가능.)
+ */
+const INITIAL_BOUNDS = {
   minX: 128.92,
   maxX: 129.38,
   minY: 34.96,
@@ -218,18 +223,14 @@ async function init() {
   rebuildCellList();
   await waitForNonemptyCanvas();
   syncCanvasPixelSizeFromContainer();
-  if (isMobileLayout()) state.renderer.vp.fit(MOBILE_INITIAL_BOUNDS);
-  else state.renderer.vp.fit(state.globalBounds);
+  // 데스크톱·모바일 모두 지역 뷰로 시작해, 화면 영역 셀만 지연 로드한다(시작 가볍게).
+  state.renderer.vp.fit(INITIAL_BOUNDS);
   clampVpScaleForEncOverview(idx);
   state.renderer.vp.applyZoomOutLimitAfterFit();
   state.fitted = true;
   resize();
 
-  if (isMobileLayout()) {
-    setStatus(`준비 완료 — 셀 ${idx.length}개. 지도를 움직이면 해당 화면 영역의 ENC만 불러옵니다.`);
-  } else {
-    setStatus(`준비 완료 — 셀 ${idx.length}개. 기본 뷰에서 겹치는 셀을 곧 불러옵니다…`);
-  }
+  setStatus(`준비 완료 — 셀 ${idx.length}개. 지도를 움직이면 해당 화면 영역의 ENC만 불러옵니다.`);
 
   const gridCb = document.getElementById("grid");
   if (gridCb) {
@@ -299,7 +300,7 @@ async function maybeFillViewportEncIfEmpty() {
   if (canvas.width < 2 || canvas.height < 2) return;
   const vis = [...state.renderer.cells.values()].filter((c) => c.visible).length;
   if (vis > 0) return;
-  const names = namesIntersectingViewport();
+  const names = namesToLoadForViewport();
   if (!names.length) return;
   await loadMany(names, { mobileLabel: "화면 영역 ENC" });
 }
@@ -638,29 +639,30 @@ function bandColor(name) {
 // filter box
 document.getElementById("filter").addEventListener("input", () => applyCellListFilter());
 
-/** 모바일: 팬·줌이 멈춘 뒤 화면과 겹치는 셀만 로드. 뷰 밖 셀은 표시 끔(메모리는 유지). */
-let _mobileVpSyncTimer = null;
+// 팬·줌이 멈춘 뒤 화면 영역에 **표시되는** 셀만 로드하고, 뷰 밖이거나 현재 축척에서
+// 너무 상세해 안 그려지는 셀은 표시를 끈다(지연 로드). 데스크톱·모바일 공통.
+let _vpSyncTimer = null;
 /** 디바운스 타이머가 만료된 뒤 한 번 더 돌릴지(로딩 중 제스처가 있었을 때). */
-let _mobileVpSyncNeedsFlush = false;
+let _vpSyncNeedsFlush = false;
 /** 동시에 여러 `loadMany`가 겹치지 않도록 직렬화. */
-let _mobileVpSyncFlushChain = Promise.resolve();
+let _vpSyncFlushChain = Promise.resolve();
 
-function scheduleMobileViewportSync() {
-  if (!isMobileLayout() || !state.renderer) return;
-  _mobileVpSyncNeedsFlush = true;
-  clearTimeout(_mobileVpSyncTimer);
-  _mobileVpSyncTimer = setTimeout(() => {
-    _mobileVpSyncTimer = null;
-    _mobileVpSyncFlushChain = _mobileVpSyncFlushChain
+function scheduleViewportSync() {
+  if (!state.renderer) return;
+  _vpSyncNeedsFlush = true;
+  clearTimeout(_vpSyncTimer);
+  _vpSyncTimer = setTimeout(() => {
+    _vpSyncTimer = null;
+    _vpSyncFlushChain = _vpSyncFlushChain
       .catch(() => {})
-      .then(() => flushMobileViewportSync());
+      .then(() => flushViewportSync());
   }, 220);
 }
 
-async function flushMobileViewportSync() {
-  while (_mobileVpSyncNeedsFlush) {
-    _mobileVpSyncNeedsFlush = false;
-    const keep = new Set(namesIntersectingViewport());
+async function flushViewportSync() {
+  while (_vpSyncNeedsFlush) {
+    _vpSyncNeedsFlush = false;
+    const keep = new Set(namesToLoadForViewport());
     for (const cell of state.renderer.cells.values()) {
       if (keep.has(cell.name)) continue;
       cell.visible = false;
@@ -685,6 +687,29 @@ function namesIntersectingViewport() {
   return targets;
 }
 
+/**
+ * 화면과 겹치고 **현재 축척에서 실제로 표시되는**(scaleDisplay 컬링을 통과하는) 셀 이름.
+ * 광역(축소) 뷰에서 상세 셀은 어차피 그려지지 않으므로 로드하지 않는다 — 지연 로드의 핵심.
+ * 이게 없으면 전국 보기에서 화면과 겹치는 744셀을 전부 불러와 시작·이동이 무거워진다.
+ */
+function namesToLoadForViewport() {
+  const r = state.renderer;
+  const w = canvas.width, h = canvas.height;
+  if (!r || w < 1 || h < 1) return [];
+  const vp = r.vp;
+  const denom = vp.scaleDenominator();
+  const useScale = r.scaleDisplay, f = r.scaleOutFactor;
+  const targets = [];
+  for (const g of r.grid) {
+    const [x0, y0] = vp.project(g.minX, g.maxY);
+    const [x1, y1] = vp.project(g.maxX, g.minY);
+    if (Math.max(x0, x1) < 0 || Math.min(x0, x1) > w || Math.max(y0, y1) < 0 || Math.min(y0, y1) > h) continue;
+    if (useScale && g.cscl && denom > g.cscl * f) continue; // 이 축척에선 너무 상세 — 표시 안 됨
+    targets.push(g.name);
+  }
+  return targets;
+}
+
 /** 목록 순서는 유지한 채, 현재 지도와 겹치는 셀만 선명·벗어난 행은 흐리게(`out-of-viewport`). */
 function syncCellListInViewportHighlight() {
   if (!listEl || rows.size === 0) return;
@@ -700,7 +725,7 @@ function syncCellListInViewportHighlight() {
 
 // bulk actions
 document.getElementById("showVisible").addEventListener("click", async () => {
-  await loadMany(namesIntersectingViewport());
+  await loadMany(namesToLoadForViewport());
 });
 document.getElementById("hideAll").addEventListener("click", () => {
   for (const c of state.renderer.cells.values()) c.visible = false;
@@ -713,6 +738,8 @@ document.getElementById("fitAll").addEventListener("click", () => {
   clampVpScaleForEncOverview(state.renderer.grid);
   state.renderer.vp.applyZoomOutLimitAfterFit();
   draw();
+  // 전국 보기로 가면 그 축척에서 표시되는 개략 셀(밴드 1·2)만 지연 로드한다(상세 셀은 제외).
+  scheduleViewportSync();
 });
 
 // ---- object-class panel: which S-57 classes the loaded cells contain, with
@@ -803,19 +830,19 @@ function focusViewportToCellName(name) {
   state.fitted = true;
   draw();
   syncCellListFocus();
-  if (isMobileLayout()) scheduleMobileViewportSync();
+  scheduleViewportSync();
 }
 
 /** 상단 로고 클릭 시 — 문서·데스크톱 캡처용으로 쓰는 부산항·가덕도 프레이밍과 동일 범위로 이동 */
 function goToCaptureView() {
   if (!state.renderer?.vp) return;
-  state.renderer.vp.fit(MOBILE_INITIAL_BOUNDS);
+  state.renderer.vp.fit(INITIAL_BOUNDS);
   state.renderer.vp.applyZoomOutLimitAfterFit();
   state.fitted = true;
   draw();
   setStatus("캡처용 화면(부산항·가덕도 일대)으로 이동했습니다.");
   syncCellListInViewportHighlight();
-  if (isMobileLayout()) scheduleMobileViewportSync();
+  scheduleViewportSync();
 }
 
 for (const el of document.querySelectorAll(".app-logo")) {
@@ -1250,8 +1277,35 @@ wireToolbarCycle("dispcat", DISPCAT_CYCLE_OPTIONS, (v) => {
   });
 })();
 // 위성지도(육지) 오버레이 토글
-document.getElementById("satellite").addEventListener("change", (e) => {
-  state.renderer.showSatellite = e.target.checked;
+/**
+ * 위성/지도 타일은 평면(머케이터)에서만 그려진다(3D 지구본은 orthographic이라 타일 미지원).
+ * 따라서 둘 중 하나라도 켜지면 자동 지구본 전환을 끄고 평면을 유지한다. 둘 다 끄면 복구.
+ */
+function syncAuto3DForTileOverlays() {
+  const vp = state.renderer.vp;
+  const tilesOn = state.renderer.showSatellite || state.renderer.showStreetMap;
+  if (tilesOn) {
+    if (vp.mode === "globe") vp.exitGlobe();   // 평면으로 즉시 복귀
+    vp.auto3D = false;
+  } else {
+    const cb = document.getElementById("globe3d");
+    vp.auto3D = cb ? cb.checked : true;        // 3D 지구본 토글 상태 복원
+    vp.syncAutoMode();
+  }
+}
+// 배경 순환 — 해도(차트만) → 위성 → 육도(거리지도). 한 컨트롤로 회전.
+//  chart  : 오버레이 없음 (S-52 차트만)
+//  sat    : 육지에 위성 영상(Esri World Imagery)
+//  street : 육지에 거리지도(Esri World Street Map)
+const BASEMAP_CYCLE_OPTIONS = [
+  { value: "chart", label: "해도" },
+  { value: "sat", label: "위성" },
+  { value: "street", label: "육도" },
+];
+wireToolbarCycle("basemap", BASEMAP_CYCLE_OPTIONS, (v) => {
+  state.renderer.showSatellite = (v === "sat");
+  state.renderer.showStreetMap = (v === "street");
+  syncAuto3DForTileOverlays();
   draw();
 });
 document.getElementById("grid").addEventListener("change", (e) => {
@@ -1350,7 +1404,7 @@ function startGlobeSpinFromDragVelocity() {
     _globeSpinVelY *= damp;
     vp2.rotateGlobeByPixels(ddx, ddy);
     draw();
-    if (isMobileLayout()) scheduleMobileViewportSync();
+    scheduleViewportSync();
     const sp2 = Math.hypot(_globeSpinVelX, _globeSpinVelY);
     if (sp2 < STOP_BELOW) {
       _globeSpinRaf = 0;
@@ -1388,7 +1442,7 @@ window.addEventListener("mouseup", () => {
   if (vp?.isGlobeView() && moved) startGlobeSpinFromDragVelocity();
   if (moved) {
     draw(); // final full-detail render at the settled position
-    if (isMobileLayout()) scheduleMobileViewportSync();
+    scheduleViewportSync();
   }
 });
 window.addEventListener("mousemove", (e) => {
@@ -1426,6 +1480,10 @@ function smoothZoomTo(targetScale, focusX, focusY) {
   targetScale = vp.clampScaleForUserZoom(targetScale);
   _zoomAnimTarget = targetScale;
   if (_zoomAnimRaf) return; // 이미 진행 중 — 목표만 갱신, 같은 루프에서 따라감
+  // 줌 애니메이션 동안 매 프레임 벡터를 다시 그리는 대신, 줌 시작 시점의 프레임을 스냅샷해
+  // 뷰포트 변화에 맞춰 스케일·블릿한다(슬리피맵식). 머케이터·비전환 상태에서만.
+  const canBlit = !vp.isGlobeView() && !vp._modeTransition;
+  if (canBlit) state.renderer.beginViewSnapshot();
   let lastT = performance.now();
   const step = (now) => {
     const dt = Math.min(64, now - lastT); lastT = now;
@@ -1438,10 +1496,15 @@ function smoothZoomTo(targetScale, focusX, focusY) {
     if (!vp.isGlobeView()) vp.zoomAtScreen(focusX, focusY, next);
     else vp.zoomGlobeAtScreen(focusX, focusY, next);
     vp.syncAutoMode();
-    // 애니메이션 중에는 가벼운 패스(면·선만)로 그려 저사양에서도 부드럽게.
-    state.renderer._fastMode = true;
-    draw();
-    if (isMobileLayout()) scheduleMobileViewportSync();
+    // 머케이터·비전환이면 스냅샷 블릿(거의 0ms), 아니면(globe 진입·모드 전환) 기존 풀 렌더.
+    if (canBlit && !vp.isGlobeView() && !vp._modeTransition) {
+      state.renderer.previewFromSnapshot();
+      updateScaleBar();
+    } else {
+      state.renderer._fastMode = true;
+      draw();
+    }
+    scheduleViewportSync();
     if (Math.abs(Math.log(vp.scale / tgt)) > 0.005) {
       _zoomAnimRaf = requestAnimationFrame(step);
     } else {
@@ -1543,7 +1606,7 @@ window.addEventListener("keydown", (e) => {
         vp.scale = vp.clampScaleForUserZoom(slot.scale);
         setStatus(`즐겨찾기 ${digit}번 복원`);
         draw();
-        if (isMobileLayout()) scheduleMobileViewportSync();
+        scheduleViewportSync();
       } else {
         setStatus(`즐겨찾기 ${digit}번이 비어 있습니다 (Ctrl+${digit}로 저장)`);
       }
@@ -1590,7 +1653,7 @@ window.addEventListener("keydown", (e) => {
   e.preventDefault();
   state.renderer.vp.syncAutoMode();
   draw();
-  if (isMobileLayout()) scheduleMobileViewportSync();
+  scheduleViewportSync();
 });
 // 셀 격자(grid) 표시 중: 지도 클릭은 격자 포커스(목록·윤곽 강조)만 바꾼다.
 // 셀·오브젝트 표시 여부는 좌측 셀 목록 체크박스에서만 변경한다(지도 클릭으로 숨김/표시 금지).
@@ -1689,7 +1752,7 @@ canvas.addEventListener("touchend", (e) => {
     touchLast = null;
     dragging = false;
     if (state.renderer?.vp?.isGlobeView() && moved) startGlobeSpinFromDragVelocity();
-    if (isMobileLayout() && moved) scheduleMobileViewportSync();
+    if (moved) scheduleViewportSync();
   }
 });
 canvas.addEventListener("touchcancel", () => {
@@ -1698,7 +1761,7 @@ canvas.addEventListener("touchcancel", () => {
   dragging = false;
   stopGlobeSpin();
   resetGlobeDragVelocity();
-  if (isMobileLayout() && moved) scheduleMobileViewportSync();
+  if (moved) scheduleViewportSync();
 });
 function pickCell(mx, my) {
   // smallest-area covering rectangle under the cursor (favours detailed cells)
@@ -1724,7 +1787,7 @@ init()
       await loadFromUrl(cell);
       return;
     }
-    await loadMany(namesIntersectingViewport(), { mobileLabel: "화면 영역 ENC" });
+    await loadMany(namesToLoadForViewport(), { mobileLabel: "화면 영역 ENC" });
     scheduleMaybeFillViewportEnc();
   })
   .catch((err) => {

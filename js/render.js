@@ -17,6 +17,12 @@ function prioIndex(p) {
   return i < 0 ? 5 : i;
 }
 
+/**
+ * S-52 display-cat 순위표 — `catAllowed`가 매 프레임 피처마다(수만 회) 조회하므로
+ * 호출마다 객체를 새로 만들지 않도록 모듈 상수로 1회만 둔다(GC 압력 제거).
+ */
+const DISPLAY_CAT_RANK = { Displaybase: 0, Standard: 1, Other: 2, Mariners: 3 };
+
 const DASH = [6, 4], DOTT = [1, 3], EMPTY_DASH = [];
 /**
  * Min squared screen-space edge length (px²) for path decimation; see `_path()`.
@@ -146,10 +152,11 @@ const ENC_BOUNDARY_WITH_GRID = new Set(["M_COVR", "M_CSCL"]);
  */
 function depthContourStandardDisplay(feat) {
   if (!feat) return false;
+  let v = feat._depthStd;
+  if (v !== undefined) return v;
   const ac = String(feat.acronym || "").trim().toUpperCase();
-  if (ac === "DEPCNT") return true;
-  if (ac === "DEPARE" && feat.prim === 2) return true;
-  return false;
+  v = ac === "DEPCNT" || (ac === "DEPARE" && feat.prim === 2);
+  return feat._depthStd = v;
 }
 
 /** 다중 축척 겹침에서 개략 셀 LS를 생략해도, 상세 셀에 COALNE가 없으면 해안이 뭉개져 보이므로 항상 그린다. */
@@ -160,8 +167,15 @@ function isCoastlineLineForOverlap(r) {
   return !!(pg && pg.type === "Line");
 }
 
+// 메모이즈 래퍼 — feat.acronym/objl/attrs는 파싱 후 불변이라 결과를 피처에 1회 캐시한다.
+// (매 프레임 피처마다 최대 4회 호출되며 문자열 toUpperCase + 정규식이 들어가 비쌌다.)
 function isEncBoundaryFeat(feat) {
   if (!feat) return false;
+  const c = feat._encB;
+  if (c !== undefined) return c;
+  return feat._encB = computeEncBoundary(feat);
+}
+function computeEncBoundary(feat) {
   const ac = String(feat.acronym || "").trim().toUpperCase();
   if (ENC_BOUNDARY_WITH_GRID.has(ac)) return true;
   const objM = /^OBJ(\d+)$/.exec(ac);
@@ -184,12 +198,16 @@ function isEncBoundaryFeat(feat) {
  */
 function isMnsysFeat(feat) {
   if (!feat) return false;
+  let v = feat._mnsys;
+  if (v !== undefined) return v;
   const ac = String(feat.acronym || "").trim().toUpperCase();
-  if (ac === "M_NSYS") return true;
-  if (/^OBJ306$/i.test(ac)) return true;
-  const o = feat.objl;
-  const n = typeof o === "number" && Number.isFinite(o) ? o : parseInt(String(o), 10);
-  return n === 306;
+  if (ac === "M_NSYS" || /^OBJ306$/i.test(ac)) v = true;
+  else {
+    const o = feat.objl;
+    const n = typeof o === "number" && Number.isFinite(o) ? o : parseInt(String(o), 10);
+    v = n === 306;
+  }
+  return feat._mnsys = v;
 }
 // ratio is wrong, so X is longitude in radians — not degrees.
 /**
@@ -560,6 +578,10 @@ class Renderer {
     this._tiltDeg = 0;
     /** 위성 영상 오버레이(육지에만). XYZ 타일을 머케이터 좌표에 맞춰 LNDARE로 클리핑해 그림. */
     this.showSatellite = false;
+    /** 거리지도(Esri World Street Map) 타일을 육지에 오버레이 — 위성 대신 도로·지명 지도. */
+    this.showStreetMap = false;
+    /** true면 ENC 겹침·줌과 무관하게 세계 육지(Natural Earth)를 항상 그림(UI 토글 없음, 기본 false). */
+    this.forceWorldLand = false;
     this._tileCache = new Map();    // "z/x/y" -> HTMLImageElement (로드 완료, 메모리 LRU)
     this._tileLoading = new Set();  // "z/x/y" 로딩 중
     this._tileMemMax = 1500;        // 메모리 캐시 상한(패닝 중 잦은 재요청 방지)
@@ -609,6 +631,19 @@ class Renderer {
   }
 
   /**
+   * 그릴 피처용 행 객체를 풀에서 빌려 채워 반환(프레임당 새 객체 할당 제거).
+   * `this._rowN`은 `_renderMercator` 시작에서 0으로 되감기므로 프레임마다 재사용된다.
+   */
+  _acquireRow(feat, ops, prio, cellCscl) {
+    const pool = this._rowPool;
+    let row = pool[this._rowN];
+    if (!row) { row = { feat: null, ops: null, prio: 0, cellCscl: 0 }; pool[this._rowN] = row; }
+    row.feat = feat; row.ops = ops; row.prio = prio; row.cellCscl = cellCscl;
+    this._rowN++;
+    return row;
+  }
+
+  /**
    * `_renderMercator` 동안만 설정: Mercator → 화면 선형변환을 vp 체인 없이 적용.
    * `_path`·해치·심볼·텍스트 등 핫패스에서 `sx`/`sy` 호출 비용을 줄인다.
    */
@@ -622,9 +657,8 @@ class Renderer {
   }
 
   catAllowed(cat) {
-    const rank = { Displaybase: 0, Standard: 1, Other: 2, Mariners: 3 };
-    const lim = rank[this.minDisplayCat] ?? 2;
-    return (rank[cat] ?? 1) <= lim;
+    const lim = DISPLAY_CAT_RANK[this.minDisplayCat] ?? 2;
+    return (DISPLAY_CAT_RANK[cat] ?? 1) <= lim;
   }
 
   /**
@@ -880,6 +914,11 @@ class Renderer {
     const PRIO_BUCKETS = 12;
     const buckets = new Array(PRIO_BUCKETS);
     for (let i = 0; i < PRIO_BUCKETS; i++) buckets[i] = [];
+    // 그릴 피처마다 만들던 행 객체({feat,ops,prio,cellCscl})를 프레임 간 재사용하는 풀로
+    // 대체한다(프레임당 수천 개 할당 → 0). 행은 같은 render() 안에서만 참조되고 다음
+    // 프레임 시작에 인덱스를 0으로 되감아 재사용하므로 프레임 경계를 넘는 참조가 없다.
+    if (!this._rowPool) this._rowPool = [];
+    this._rowN = 0;
     for (const cell of this.cells.values()) {
       if (!cell.visible || !cell.loaded || !cell.features) continue;
       const cscl = cell.bounds && cell.bounds.cscl;
@@ -901,6 +940,24 @@ class Renderer {
         // 보유 피처를 통과시키기 위한 영속 플래그(미투영 첫 프레임은 feat.soundings로 판정).
         if (!feat.geom && !feat.soundings && !feat._hasSoundings) continue;
         if (this.hiddenClasses.has(feat.acronym)) continue; // per-object-class toggle
+        // 투영(캐시)한 뒤 화면 밖/서브픽셀 피처를 먼저 컬링한다. 줌인 시 대다수 피처가
+        // 화면 밖이므로, 비싼 심볼 해석·SCAMIN·표시범주 판정을 그만큼 건너뛴다.
+        // (워커가 적재 시 이미 투영해 두므로 _prep는 보통 no-op. 모든 필터는 AND라
+        //  순서를 바꿔도 실제로 그려지는 피처 집합은 동일하다.)
+        this._prep(feat);
+        const b = feat._bbox;
+        if (b) {
+          // off-screen
+          if (b[2] < winMinX || b[0] > winMaxX || b[3] < winMinY || b[1] > winMaxY) {
+            culled++; continue;
+          }
+          // sub-pixel area/line at this scale: invisible, skip (points/soundings exempt)
+          const t = feat._pg && feat._pg.type;
+          if ((t === "Area" || t === "Line") &&
+              (b[2] - b[0]) * vp.scale < 1.5 && (b[3] - b[1]) * vp.scale < 1.5) {
+            culled++; continue;
+          }
+        }
         if (!this.showGrid && isEncBoundaryFeat(feat)) continue;
         if (this.respectScamin) {
           if (feat._scaminN === undefined) {
@@ -934,23 +991,9 @@ class Renderer {
           ? "Standard"
           : res.displayCat;
         if (!feat.soundings && !feat._hasSoundings && !this.catAllowed(displayCatForFilter) && !encBoundaryWithGrid) continue;
-        this._prep(feat);
-        const b = feat._bbox;
-        if (b) {
-          // off-screen
-          if (b[2] < winMinX || b[0] > winMaxX || b[3] < winMinY || b[1] > winMaxY) {
-            culled++; continue;
-          }
-          // sub-pixel area/line at this scale: invisible, skip (points/soundings exempt)
-          const t = feat._pg && feat._pg.type;
-          if ((t === "Area" || t === "Line") &&
-              (b[2] - b[0]) * vp.scale < 1.5 && (b[3] - b[1]) * vp.scale < 1.5) {
-            culled++; continue;
-          }
-        }
         drawn++;
         const bucket = buckets[res.prio < PRIO_BUCKETS ? res.prio : PRIO_BUCKETS - 1];
-        bucket.push({ feat, ops: res.ops, prio: res.prio, cellCscl: cscl || Infinity });
+        bucket.push(this._acquireRow(feat, res.ops, res.prio, cscl || Infinity));
       }
     }
     const resolved = [];
@@ -971,11 +1014,13 @@ class Renderer {
     // 위성 오버레이용으로, **실제로 그려진** LNDARE(육지면) 링을 함께 수집한다.
     // 위성 클립을 이 집합과 100% 동일하게 써서 "육지가 칠해진 곳 = 위성이 덮이는 곳"을 보장
     // → 축척 밴드 경계에서 한쪽만 그려지는 어긋남(탄색 사각형만 남는 현상)을 제거.
-    const satLandRings = this.showSatellite ? [] : null;
+    // 위성(showSatellite) 또는 거리지도(showStreetMap) 중 하나라도 켜지면 육지 타일을 그린다.
+    const tileOverlayOn = this.showSatellite || this.showStreetMap;
+    const satLandRings = tileOverlayOn ? [] : null;
     // 위성이 ENC 바다(항만·만)를 덮는 것을 막기 위해, LNDARE가 아닌 AC 면(=바다/수심)을
     // 모아 위성 위에 다시 그린다. 세계 육지(Natural Earth)는 해상도가 낮아 항만을 육지로
     // 분류하므로, ENC가 "바다"라고 한 면을 복구해 청록색 격자 오염을 제거.
-    const satSeaFills = this.showSatellite ? [] : null;
+    const satSeaFills = tileOverlayOn ? [] : null;
     /** CSCL 미부여 셀은 정렬 시 가장 거친 것으로 취급(상세 셀 LNDARE가 위에 오도록). */
     const csclSortKey = (r) => (r.cellCscl === Infinity ? 1e18 : r.cellCscl);
     const drawAreaOps = (r, isLand) => {
@@ -1018,8 +1063,10 @@ class Renderer {
     //    (거친 소축척 LNDARE 폴리곤이 위성 클립에 끼어 직선으로 잘리던 문제 해소)
     //  - 광역 줌: 육지(ENC LNDARE ∪ 세계 육지)로 클립(바다는 ENC가 거의 안 덮으므로).
     // 두 경우 모두 마지막에 ENC 바다 면을 위성 위에 다시 그려 항만·만을 복구.
-    if (this.showSatellite) {
-      this._drawSatelliteLand(satLandRings, satSeaFills, [winMinX, winMaxX, winMinY, winMaxY]);
+    if (tileOverlayOn) {
+      // 위성이 우선(둘 다 켜면 위성). 거리지도만 켜면 street 타일.
+      const layer = this.showSatellite ? "imagery" : "street";
+      this._drawSatelliteLand(satLandRings, satSeaFills, [winMinX, winMaxX, winMinY, winMaxY], layer);
       for (const f of satSeaFills) this._fillArea(f.rings, f.color, 1);
     }
     // pass 2: lines — batched by style so thousands of features stroke in a
@@ -1041,7 +1088,9 @@ class Renderer {
       for (const op of r.ops) {
         if (op.op !== "LS") continue;
         if (isMnsysFeat(r.feat) && op.color === chblkRgb) continue;
-        const key = op.color + "|" + (op.width || 1) + "|" + (op.style || "");
+        // 스타일 그룹 키는 op이 불변(해석 시 1회 생성·캐시)이라 op에 한 번만 만들어 둔다.
+        let key = op._lsKey;
+        if (key === undefined) key = op._lsKey = op.color + "|" + (op.width || 1) + "|" + (op.style || "");
         let grp = lineGroups.get(key);
         if (!grp) { grp = { op, rings: [] }; lineGroups.set(key, grp); }
         for (const ring of pg.rings) grp.rings.push(ring);
@@ -1085,11 +1134,16 @@ class Renderer {
 
   // --- fast pan: snapshot the last full frame, then blit it translated while
   // the user drags, deferring the (expensive) full re-render until they stop.
-  beginPan() {
+  beginPan() { this.beginViewSnapshot(); }
+
+  /** 현재 캔버스와 그 시점의 뷰(scale·cx·cy)를 스냅샷에 저장 — 팬/줌 프리뷰 블릿의 기준 프레임. */
+  beginViewSnapshot() {
     if (!this._snap) this._snap = document.createElement("canvas");
     this._snap.width = this.canvas.width;
     this._snap.height = this.canvas.height;
     this._snap.getContext("2d").drawImage(this.canvas, 0, 0);
+    const vp = this.vp;
+    this._snapView = { scale: vp.scale, cx: vp.cx, cy: vp.cy };
   }
   previewPan(ox, oy) {
     // globe 모드는 회전(orthographic)이라 평면 이동 프리뷰가 어색하므로 매번 풀 렌더.
@@ -1098,6 +1152,30 @@ class Renderer {
     ctx.fillStyle = this.s52.color("DEPDW");
     ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
     if (this._snap) ctx.drawImage(this._snap, ox, oy);
+  }
+
+  /**
+   * 줌(또는 팬+줌) 프리뷰: 스냅샷을 찍은 시점의 뷰와 현재 뷰의 차이를 균일 확대(k)+평행이동(tx,ty)
+   * affine으로 계산해 스냅샷을 현재 뷰포트에 맞춰 한 번만 블릿한다. 매 프레임 벡터를 다시 그리지
+   * 않아 슬리피맵처럼 줌이 즉각 매끄럽고, 멈추면 호출 측이 풀 렌더로 선명하게 마무리한다.
+   * 머케이터 전용(globe·모드 전환 중에는 호출 측이 풀 렌더로 우회). 포커스 픽셀은 `zoomAtScreen`과
+   * 동일하게 고정된다(유도: current = k·snap + [w/2·(1-k) + (snapCx-cx)·scale]).
+   */
+  previewFromSnapshot() {
+    const sv = this._snapView;
+    if (!sv || !this._snap) { this.render(); return; }
+    const vp = this.vp;
+    const w = this.canvas.width, h = this.canvas.height;
+    const k = vp.scale / sv.scale;
+    const tx = w * 0.5 * (1 - k) + (sv.cx - vp.cx) * vp.scale;
+    const ty = h * 0.5 * (1 - k) - (sv.cy - vp.cy) * vp.scale;
+    const ctx = this.ctx;
+    ctx.fillStyle = this.s52.color("DEPDW");
+    ctx.fillRect(0, 0, w, h);
+    const prevSmooth = ctx.imageSmoothingEnabled;
+    ctx.imageSmoothingEnabled = true; // 줌 스케일 블릿은 부드럽게(최종 풀 렌더에서 선명 복원)
+    ctx.drawImage(this._snap, 0, 0, w, h, tx, ty, w * k, h * k);
+    ctx.imageSmoothingEnabled = prevSmooth;
   }
 
   /**
@@ -1295,6 +1373,8 @@ class Renderer {
    */
   _shouldDrawNaturalEarthWorldLand(winMinX, winMaxX, winMinY, winMaxY) {
     const vp = this.vp;
+    // forceWorldLand면 줌·ENC 겹침과 무관하게 항상 세계 육지를 그린다(현재 UI에서 설정하지 않음).
+    if (this.forceWorldLand) return true;
     if (vp.scale > 30000) return false;
     if (vp.scaleDenominator() < MERCATOR_WORLD_OVERLAY_MIN_DENOM) return false;
     if (this._mercViewportIntersectsDisplayedEncCell(winMinX, winMaxX, winMinY, winMaxY)) return false;
@@ -2047,15 +2127,17 @@ class Renderer {
    *        바다를 침범하지 않게 한다(거친 소축척 육지 폴리곤이 만든 직선 잘림 방지).
    * @param {number[]} win - [winMinX, winMaxX, winMinY, winMaxY] 머케이터 뷰 창
    */
-  _drawSatelliteLand(encLandRings, seaFills, win) {
+  _drawSatelliteLand(encLandRings, seaFills, win, layer) {
     const ctx = this.ctx, vp = this.vp;
     const [winMinX, winMaxX, winMinY, winMaxY] = win;
 
-    // 세계 육지(머케이터 캐시) 링은 **광역 줌에서만** 클립에 포함 — 상세 축척에서는 ENC만
-    // (`_shouldDrawNaturalEarthWorldLand`)으로 개략 육지와 위성이 겹치지 않게 함.
-    // 광역에서 ENC LNDARE가 없는 내륙은 여전히 Natural Earth로 클립해 탄색 구멍을 막음.
+    // 타일(위성/지도) 클립 영역 = ENC 육지(LNDARE) ∪ 세계 육지(Natural Earth).
+    // 세계 육지는 **상세 줌(scale>30000)이 아니면 항상** 포함한다. (ENC 겹침 여부로 막던
+    // `_shouldDrawNaturalEarthWorldLand`를 쓰면, 전국 셀이 모두 표시된 광역 뷰에서 세계 육지
+    // 클립이 비활성→타일 클립 경로가 비어 위성·지도가 아예 안 그려지던 버그가 있었음.)
+    // 상세 줌에서는 ENC LNDARE가 충분히 촘촘해 세계 육지 없이도 클립이 채워진다.
     const hasEnc = encLandRings && encLandRings.length;
-    const useWorld = this._shouldDrawNaturalEarthWorldLand(winMinX, winMaxX, winMinY, winMaxY);
+    const useWorld = vp.scale <= 30000;
     let worldPolys = null;
     if (useWorld) {
       this._ensureWorldLand();
@@ -2107,7 +2189,7 @@ class Renderer {
       const wrapX = ((tx % n) + n) % n;
       for (let ty = ty0; ty <= ty1; ty++) {
         if (ty < 0 || ty >= n) continue;
-        const img = this._getTile(z, wrapX, ty);
+        const img = this._getTile(z, wrapX, ty, layer);
         if (!img) continue;
         const leftMx = -Math.PI + tx * tileMercW;
         const topMy = (0.5 - ty / n) * TWO_PI;
@@ -2126,8 +2208,10 @@ class Renderer {
    *   2) Cache API 디스크(_tileDiskCache) — 새로고침·재방문에도 네트워크 없이 로드
    * 디스크에도 없으면 네트워크 fetch → 디스크에 저장.
    */
-  _getTile(z, x, y) {
-    const key = `${z}/${x}/${y}`;
+  _getTile(z, x, y, layer) {
+    // layer: "imagery"(위성) | "street"(거리지도). 둘 다 Esri 무료 타일·웹 머케이터·키 불필요.
+    const lyr = layer || "imagery";
+    const key = `${lyr}/${z}/${x}/${y}`;
     const cached = this._tileCache.get(key);
     if (cached) {
       // LRU 갱신: 최근 사용을 맨 뒤로
@@ -2137,8 +2221,9 @@ class Renderer {
     }
     if (this._tileLoading.has(key)) return null;
     this._tileLoading.add(key);
-    // Esri World Imagery (무료, 키 불필요). 타일 순서: /z/y/x
-    const url = `https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`;
+    // 타일 순서: /z/y/x
+    const svc = lyr === "street" ? "World_Street_Map" : "World_Imagery";
+    const url = `https://services.arcgisonline.com/ArcGIS/rest/services/${svc}/MapServer/tile/${z}/${y}/${x}`;
     this._loadTileAsync(key, url);
     return null;
   }
@@ -2305,6 +2390,23 @@ class Renderer {
   _path(arr, minSeg2 = MIN_SEG2) {
     const ctx = this.ctx;
     const n = arr.length;
+    const m = this._mercScreen;
+    // 핫패스: Mercator→화면 선형변환을 정점 루프 안에 인라인(메서드 호출/속성 조회 제거).
+    // `_sx`/`_sy`의 빠른 경로와 동일한 수식이라 결과 픽셀은 비트 단위로 같다.
+    if (m) {
+      const s = m.s, mcx = m.cx, mcy = m.cy, hw = m.hw, hh = m.hh;
+      let lx = (arr[0] - mcx) * s + hw, ly = hh - (arr[1] - mcy) * s;
+      ctx.moveTo(lx, ly);
+      for (let i = 2; i < n; i += 2) {
+        const x = (arr[i] - mcx) * s + hw, y = hh - (arr[i + 1] - mcy) * s;
+        const dx = x - lx, dy = y - ly;
+        if (i === n - 2 || dx * dx + dy * dy >= minSeg2) {
+          ctx.lineTo(x, y);
+          lx = x; ly = y;
+        }
+      }
+      return;
+    }
     let lx = this._sx(arr[0]), ly = this._sy(arr[1]);
     ctx.moveTo(lx, ly);
     for (let i = 2; i < n; i += 2) {

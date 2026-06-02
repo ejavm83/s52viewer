@@ -49,6 +49,13 @@ const CSCL_OVERLAP_TOL = 1.5;
 const MERCATOR_WORLD_OVERLAY_MIN_DENOM = 2_800_000;
 
 /**
+ * 지구본 모드에서 더 이상 축소(scale 감소)하지 못하게 할 때,
+ * 화면상 구 **직경**이 캔버스 **짧은 변** 길이의 이 비율보다 작아지지 않게 함.
+ * (너무 작으면 별 배경만 크고 지도 디스크가 핀포인트처럼 보이는 문제가 생김.)
+ */
+const GLOBE_MIN_DIAMETER_FRAC_OF_MIN_CANVAS_SIDE = 0.94;
+
+/**
  * S-52 아틀라스 심볼 접두: TSS·항로·추천항적·심수로·조류/만조 등 **방향 화살표**류.
  * 겹침제거(declutter) 시 픽셀 거리 < FLOW_ARROW_MIN_DIST_PX 이내의 화살표는 하나만 남긴다.
  *
@@ -261,8 +268,9 @@ class Viewport {
    * 핀치·휠 등 사용자 축소(scale 감소) 입력의 scale 하한.
    * fit 직후 `zoomOutMinScale`이 지역 확대(=scale 큼)로 잡히면 그 값이
    * 3D 자동 전환 임계(`globeThresholdScale`)보다 크게 남아, 모바일에서 축소해도
-   * 지구본으로 못 들어가는 경우가 있다. `auto3D`일 때는 하한을 임계 아래까지
-   * 낮춰 축소 시 3D로 진입할 수 있게 한다.
+   * 지구본으로 못 들어가는 경우가 있다. `auto3D` 머케이터에서는 하한을 `th×0.98`까지
+   * 낮춰 진입 가능하게 한다. 지구본 모드에서는 `th×0.98`을 쓰면 scale이 th보다
+   * 아래일 때 더 축소가 막히므로 `th×0.02`까지 허용해 지구본을 더 작게 볼 수 있게 한다.
    */
   minScaleForUserZoom() {
     if (this.zoomOutMinScale == null || !Number.isFinite(this.zoomOutMinScale)) return null;
@@ -270,11 +278,18 @@ class Viewport {
     if (typeof this.globeThresholdScale !== "function") return this.zoomOutMinScale;
     const th = this.globeThresholdScale();
     if (!(th > 0) || !Number.isFinite(th)) return this.zoomOutMinScale;
+    // 머케이터: 지역 fit 한한이 th보다 크면 th 근처까지는 축소해 3D 진입 가능하게.
+    // 지구본: th×0.98을 하한에 쓰면 scale < th 인 상태에서 더 줄일 수 없어 멈춤 → th보다 훨씬 작은 하한.
+    if (this.isGlobeView()) return Math.min(this.zoomOutMinScale, th * 0.02);
     return Math.min(this.zoomOutMinScale, th * 0.98);
   }
   /** 사용자 줌 입력용: `minScaleForUserZoom` 미만으로 내려가지 않게 한다. */
   clampScaleForUserZoom(s) {
-    const lo = this.minScaleForUserZoom();
+    let lo = this.minScaleForUserZoom();
+    if (this.isGlobeView()) {
+      const g = this.globeZoomOutMinScale();
+      lo = lo == null ? g : Math.max(lo, g);
+    }
     if (lo == null || !Number.isFinite(s)) return s;
     return Math.max(s, lo);
   }
@@ -336,10 +351,15 @@ class Viewport {
   }
   /** scale 기반 자동 전환: auto3D일 때만 동작. 호출 측에서 매 입력 직후 부른다. */
   syncAutoMode() {
-    if (!this.auto3D) return;
-    const t = this.globeThresholdScale();
-    if (this.scale < t && this.mode !== "globe") this.enterGlobe();
-    else if (this.scale >= t && this.mode === "globe") this.exitGlobe();
+    if (this.auto3D) {
+      const t = this.globeThresholdScale();
+      if (this.scale < t && this.mode !== "globe") this.enterGlobe();
+      else if (this.scale >= t && this.mode === "globe") this.exitGlobe();
+    }
+    if (this.mode === "globe") {
+      const sm = this.globeZoomOutMinScale();
+      if (this.scale < sm) this.scale = sm;
+    }
   }
   enterGlobe() {
     if (this.mode === "globe") return;
@@ -363,6 +383,35 @@ class Viewport {
     const D = this.globeCameraDistance();
     const d2 = D * D - 1;
     return f / Math.sqrt(Math.max(1e-6, d2));
+  }
+  /**
+   * 지구본을 더 멀리 보낼 때(scale 더 낮출 때) `globeRadius()`가
+   * `min(w,h)·GLOBE_MIN_DIAMETER_FRAC_OF_MIN_CANVAS_SIDE/2` 미만이 되지 않게 하는 scale 하한.
+   * r = f/√(D²−1), D = 1+f/s ⇒ s = f/(√(1+f²/r²)−1).
+   */
+  globeZoomOutMinScale() {
+    const h = this.canvas.height;
+    const w = this.canvas.width;
+    if (!(h > 2 && w > 2)) return 1;
+    const ref = Math.min(w, h);
+    const dTar = ref * GLOBE_MIN_DIAMETER_FRAC_OF_MIN_CANVAS_SIDE;
+    const rTar = dTar / 2;
+    const f = this.globeFocalLength();
+    if (!(f > 0) || !(rTar > 0)) return 1;
+    const inner = Math.sqrt(1 + (f / rTar) * (f / rTar)) - 1;
+    if (!(inner > 1e-10)) return 1;
+    let s = Math.max(1, f / inner);
+    const sSaved = this.scale;
+    let guard = 0;
+    while (guard < 10) {
+      this.scale = s;
+      const r = this.globeRadius();
+      this.scale = sSaved;
+      if (2 * r >= dTar * 0.998) break;
+      s *= 1.04;
+      guard++;
+    }
+    return Math.max(1, s);
   }
   /**
    * 구체 표면 위의 (lon, lat) → 화면 픽셀. **원근 투영**.
@@ -578,8 +627,6 @@ class Renderer {
     this._tiltDeg = 0;
     /** 위성 영상 오버레이(육지에만). XYZ 타일을 머케이터 좌표에 맞춰 LNDARE로 클리핑해 그림. */
     this.showSatellite = false;
-    /** 거리지도(Esri World Street Map) 타일을 육지에 오버레이 — 위성 대신 도로·지명 지도. */
-    this.showStreetMap = false;
     /** true면 ENC 겹침·줌과 무관하게 세계 육지(Natural Earth)를 항상 그림(UI 토글 없음, 기본 false). */
     this.forceWorldLand = false;
     this._tileCache = new Map();    // "z/x/y" -> HTMLImageElement (로드 완료, 메모리 LRU)
@@ -835,7 +882,8 @@ class Renderer {
   render() {
     // 축척만 바뀌고 syncAutoMode가 빠지는 경로(초기 fit, 터치 핀치 등)에서도
     // 자동 지구본 전환이 되도록 매 프레임 동기화(비용은 비교·분기 수준).
-    if (this.vp.auto3D) this.vp.syncAutoMode();
+    // auto3D가 꺼져 있어도 호출해야 함: globe 모드일 때 지구 디스크 최소 반지름 보정(§Viewport.syncAutoMode).
+    this.vp.syncAutoMode();
     // 버드뷰 기울기를 캔버스 CSS 변환으로 적용(globe 모드면 자동으로 0 리셋).
     this._applyCanvasTilt();
     // ── 모드 전환 크로스페이드 ──
@@ -1014,8 +1062,8 @@ class Renderer {
     // 위성 오버레이용으로, **실제로 그려진** LNDARE(육지면) 링을 함께 수집한다.
     // 위성 클립을 이 집합과 100% 동일하게 써서 "육지가 칠해진 곳 = 위성이 덮이는 곳"을 보장
     // → 축척 밴드 경계에서 한쪽만 그려지는 어긋남(탄색 사각형만 남는 현상)을 제거.
-    // 위성(showSatellite) 또는 거리지도(showStreetMap) 중 하나라도 켜지면 육지 타일을 그린다.
-    const tileOverlayOn = this.showSatellite || this.showStreetMap;
+    // 위성(showSatellite)이 켜지면 육지 타일을 그린다.
+    const tileOverlayOn = this.showSatellite;
     const satLandRings = tileOverlayOn ? [] : null;
     // 위성이 ENC 바다(항만·만)를 덮는 것을 막기 위해, LNDARE가 아닌 AC 면(=바다/수심)을
     // 모아 위성 위에 다시 그린다. 세계 육지(Natural Earth)는 해상도가 낮아 항만을 육지로
@@ -1064,9 +1112,7 @@ class Renderer {
     //  - 광역 줌: 육지(ENC LNDARE ∪ 세계 육지)로 클립(바다는 ENC가 거의 안 덮으므로).
     // 두 경우 모두 마지막에 ENC 바다 면을 위성 위에 다시 그려 항만·만을 복구.
     if (tileOverlayOn) {
-      // 위성이 우선(둘 다 켜면 위성). 거리지도만 켜면 street 타일.
-      const layer = this.showSatellite ? "imagery" : "street";
-      this._drawSatelliteLand(satLandRings, satSeaFills, [winMinX, winMaxX, winMinY, winMaxY], layer);
+      this._drawSatelliteLand(satLandRings, satSeaFills, [winMinX, winMaxX, winMinY, winMaxY]);
       for (const f of satSeaFills) this._fillArea(f.rings, f.color, 1);
     }
     // pass 2: lines — batched by style so thousands of features stroke in a
@@ -2127,7 +2173,7 @@ class Renderer {
    *        바다를 침범하지 않게 한다(거친 소축척 육지 폴리곤이 만든 직선 잘림 방지).
    * @param {number[]} win - [winMinX, winMaxX, winMinY, winMaxY] 머케이터 뷰 창
    */
-  _drawSatelliteLand(encLandRings, seaFills, win, layer) {
+  _drawSatelliteLand(encLandRings, seaFills, win) {
     const ctx = this.ctx, vp = this.vp;
     const [winMinX, winMaxX, winMinY, winMaxY] = win;
 
@@ -2189,7 +2235,7 @@ class Renderer {
       const wrapX = ((tx % n) + n) % n;
       for (let ty = ty0; ty <= ty1; ty++) {
         if (ty < 0 || ty >= n) continue;
-        const img = this._getTile(z, wrapX, ty, layer);
+        const img = this._getTile(z, wrapX, ty);
         if (!img) continue;
         const leftMx = -Math.PI + tx * tileMercW;
         const topMy = (0.5 - ty / n) * TWO_PI;
@@ -2208,10 +2254,9 @@ class Renderer {
    *   2) Cache API 디스크(_tileDiskCache) — 새로고침·재방문에도 네트워크 없이 로드
    * 디스크에도 없으면 네트워크 fetch → 디스크에 저장.
    */
-  _getTile(z, x, y, layer) {
-    // layer: "imagery"(위성) | "street"(거리지도). 둘 다 Esri 무료 타일·웹 머케이터·키 불필요.
-    const lyr = layer || "imagery";
-    const key = `${lyr}/${z}/${x}/${y}`;
+  _getTile(z, x, y) {
+    // Esri World Imagery — 무료 타일·웹 머케이터·키 불필요.
+    const key = `imagery/${z}/${x}/${y}`;
     const cached = this._tileCache.get(key);
     if (cached) {
       // LRU 갱신: 최근 사용을 맨 뒤로
@@ -2222,8 +2267,7 @@ class Renderer {
     if (this._tileLoading.has(key)) return null;
     this._tileLoading.add(key);
     // 타일 순서: /z/y/x
-    const svc = lyr === "street" ? "World_Street_Map" : "World_Imagery";
-    const url = `https://services.arcgisonline.com/ArcGIS/rest/services/${svc}/MapServer/tile/${z}/${y}/${x}`;
+    const url = `https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`;
     this._loadTileAsync(key, url);
     return null;
   }

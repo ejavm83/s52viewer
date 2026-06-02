@@ -2,7 +2,7 @@ import { DDF } from "./iso8211.js";
 import { S57 } from "./s57.js";
 import { S52 } from "./s52.js?v=5";
 import { loadCatalog } from "./catalog.js";
-import { Renderer } from "./render.js?v=89";
+import { Renderer } from "./render.js?v=91";
 
 const ATLAS_BY_TABLE = {
   DAY_BRIGHT: "assets/rastersymbols-day.png",
@@ -307,6 +307,8 @@ async function maybeFillViewportEncIfEmpty() {
 
 function resize() {
   syncCanvasPixelSizeFromContainer();
+  // 캔버스 크기가 바뀌면 focal 길이·지구본 최소 축척이 달라짐 — 그리기 전에 한 번 맞춤.
+  if (state.renderer?.vp) state.renderer.vp.syncAutoMode();
   // 첫 뷰 맞춤은 init() / openFiles()에서만 수행 (모바일 전역 fit 덮어쓰기 방지)
   draw();
   scheduleMaybeFillViewportEnc();
@@ -1283,7 +1285,7 @@ wireToolbarCycle("dispcat", DISPCAT_CYCLE_OPTIONS, (v) => {
  */
 function syncAuto3DForTileOverlays() {
   const vp = state.renderer.vp;
-  const tilesOn = state.renderer.showSatellite || state.renderer.showStreetMap;
+  const tilesOn = state.renderer.showSatellite;
   if (tilesOn) {
     if (vp.mode === "globe") vp.exitGlobe();   // 평면으로 즉시 복귀
     vp.auto3D = false;
@@ -1293,18 +1295,15 @@ function syncAuto3DForTileOverlays() {
     vp.syncAutoMode();
   }
 }
-// 배경 순환 — 해도(차트만) → 위성 → 육도(거리지도). 한 컨트롤로 회전.
-//  chart  : 오버레이 없음 (S-52 차트만)
-//  sat    : 육지에 위성 영상(Esri World Imagery)
-//  street : 육지에 거리지도(Esri World Street Map)
+// 배경 순환 — 해도(차트만) ↔ 위성. 한 컨트롤로 회전.
+//  chart : 오버레이 없음 (S-52 차트만)
+//  sat   : 육지에 위성 영상(Esri World Imagery)
 const BASEMAP_CYCLE_OPTIONS = [
   { value: "chart", label: "해도" },
   { value: "sat", label: "위성" },
-  { value: "street", label: "육도" },
 ];
 wireToolbarCycle("basemap", BASEMAP_CYCLE_OPTIONS, (v) => {
   state.renderer.showSatellite = (v === "sat");
-  state.renderer.showStreetMap = (v === "street");
   syncAuto3DForTileOverlays();
   draw();
 });
@@ -1604,6 +1603,7 @@ window.addEventListener("keydown", (e) => {
       if (slot) {
         vp.cx = slot.cx; vp.cy = slot.cy;
         vp.scale = vp.clampScaleForUserZoom(slot.scale);
+        vp.syncAutoMode();
         setStatus(`즐겨찾기 ${digit}번 복원`);
         draw();
         scheduleViewportSync();
@@ -1714,7 +1714,7 @@ canvas.addEventListener("touchmove", (e) => {
     const rect = canvas.getBoundingClientRect();
     const d = touchDistance(t0, t1);
     const factor = d / pinch.dist;
-    const lo = vp.minScaleForUserZoom() ?? 200;
+    const lo = vp.minScaleForUserZoom() ?? (vp.isGlobeView() ? 1 : 200);
     const newScale = vp.clampScaleForUserZoom(Math.min(8e7, Math.max(lo, pinch.scale * factor)));
     const cx = ((t0.clientX + t1.clientX) / 2) - rect.left;
     const cy = ((t0.clientY + t1.clientY) / 2) - rect.top;

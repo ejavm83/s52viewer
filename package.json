@@ -5,6 +5,7 @@
   "private": true,
   "scripts": {
     "build": "node scripts/build-cell-index.mjs",
+    "start": "node serve.js",
     "serve": "node serve.js",
     "test": "node test/parse-test.mjs"
   },

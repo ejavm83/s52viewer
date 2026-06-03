@@ -434,12 +434,20 @@ async function ensureLoaded(name) {
   if (!cell || cell.loaded) return cell;
   if (cell._loading) return cell._loading; // dedupe concurrent requests
   cell._loading = (async () => {
-    const buf = await fetchEncCell("000/" + name);
-    const chart = await loader.parse(buf); // parsed in a worker (off main thread)
-    cell.features = chart.features;
-    cell.chartBounds = chart.bounds;
-    cell.loaded = true;
-    return cell;
+    try {
+      const buf = await fetchEncCell("000/" + name);
+      const chart = await loader.parse(buf); // parsed in a worker (off main thread)
+      cell.features = chart.features;
+      cell.chartBounds = chart.bounds;
+      cell.loaded = true;
+      cell._loadError = null;
+      return cell;
+    } catch (e) {
+      console.warn("ENC 로드 실패(건너뜀):", name, e && e.message ? e.message : e);
+      cell._loadError = e;
+      cell.loaded = false;
+      return cell;
+    }
   })();
   return cell._loading;
 }
@@ -1020,7 +1028,8 @@ document.getElementById("objNone").addEventListener("click", () => {
 
 async function loadMany(names, opts = {}) {
   const mobileLabel = opts.mobileLabel || "ENC 전체";
-  const CONC = 4;
+  // 동시에 큰 .000 여러 개를 받으면 소형 호스트(Render 512MB 등)에서 502가 나기 쉬움
+  const CONC = 2;
   let done = 0;
   const total = names.length;
   for (let i = 0; i < names.length; i += CONC) {
@@ -1030,7 +1039,8 @@ async function loadMany(names, opts = {}) {
     await Promise.all(chunk.map((n) => ensureLoaded(n)));
     for (const name of chunk) {
       const cell = state.renderer.cells.get(name);
-      if (cell) { cell.visible = true; syncRow(name); }
+      if (cell && cell.loaded) { cell.visible = true; syncRow(name); }
+      else if (cell) { cell.visible = false; syncRow(name); }
       done++;
     }
     if (done % 8 === 0 || done === total) draw();

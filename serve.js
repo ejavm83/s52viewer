@@ -30,6 +30,7 @@ const MIME = {
   ".csv": "text/csv; charset=utf-8",
   ".png": "image/png",
   ".json": "application/json",
+  ".geojson": "application/geo+json; charset=utf-8",
   ".md": "text/markdown; charset=utf-8",
   ".000": "application/octet-stream",
 };
@@ -96,7 +97,14 @@ async function getTilePng(z, x, y, settings) {
 
 http
   .createServer((req, res) => {
-    let urlPath = decodeURIComponent(req.url.split("?")[0]);
+    let urlPath;
+    try {
+      urlPath = decodeURIComponent(req.url.split("?")[0]);
+    } catch {
+      res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("bad request");
+      return;
+    }
     if (urlPath === "/api/cells") {
       const files = listEncCellNames();
       res.writeHead(200, { "Content-Type": "application/json" });

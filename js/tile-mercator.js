@@ -87,7 +87,8 @@
     probe.onload = () => decide(probe.naturalWidth > 0, "empty");
     probe.onerror = () => decide(false, "404/error");
     probe.src = `${TILE_BASE}/tile/12/3516/1621.png?p=day&probe=1`;
-    setTimeout(() => decide(false, "timeout"), 6000);
+    // Render 등 무료 호스트는 슬립 해제·첫 타일(node-canvas) 예열까지 6초를 넘기기 쉬움
+    setTimeout(() => decide(false, "timeout"), 22_000);
   }
 
   // main.js의 비동기 init 완료 대기(window.s52app.state.renderer)

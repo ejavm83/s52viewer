@@ -189,6 +189,27 @@
     box-shadow: 0 1px 2px rgba(0,0,0,.12);
   }
   #scale-bar .label { display: block; margin-bottom: 1px; white-space: nowrap; }
+  /* 화면 줌 버튼(+/−) — 우하단 */
+  #zoom-ctrl {
+    position: absolute; right: 12px; bottom: 12px; z-index: 7;
+    display: flex; flex-direction: column; gap: 1px;
+    border-radius: 9px; overflow: hidden;
+    box-shadow: 0 2px 10px rgba(0,0,0,.28);
+  }
+  #zoom-ctrl button {
+    width: 38px; height: 38px; border: none; cursor: pointer;
+    background: rgba(17,24,31,.82); color: #eaf2f6;
+    font-size: 22px; font-weight: 600; line-height: 1;
+    display: flex; align-items: center; justify-content: center;
+    transition: background .12s; -webkit-user-select: none; user-select: none;
+    touch-action: manipulation;
+  }
+  #zoom-ctrl button:hover { background: rgba(33,46,58,.95); }
+  #zoom-ctrl button:active { background: rgba(52,73,94,1); }
+  #zoom-ctrl button:focus-visible { outline: 2px solid #4aa3ff; outline-offset: -2px; }
+  @media (max-width: 768px) {
+    #zoom-ctrl button { width: 44px; height: 44px; font-size: 24px; }
+  }
   #status-bar {
     display: flex; align-items: center; gap: 14px; flex-shrink: 0;
     padding: 5px 12px; background: #11181f; color: #9fb4bb; font-size: 12px;
@@ -355,15 +376,19 @@
         <span class="label" id="scale-bar-label"></span>
         <div class="track" id="scale-bar-track"></div>
       </div>
+      <div id="zoom-ctrl" role="group" aria-label="확대·축소">
+        <button type="button" id="zoom-in" aria-label="확대" title="확대 (또는 + 키 / 더블클릭)">+</button>
+        <button type="button" id="zoom-out" aria-label="축소" title="축소 (또는 − 키)">−</button>
+      </div>
     </div>
   </div>
   <div id="status-bar">
     <div id="status">초기화 중…</div>
     <h1 class="mobile-app-title app-logo" tabindex="0" role="button" aria-label="캡처용 화면으로 이동" title="캡처용 화면(부산항·가덕도 일대)으로 이동">S-52 ENC Viewer</h1>
     <a href="about.html" class="doc-page doc-page-mobile">프로그램 설명</a>
-    <div id="app-credit">제작: 지엠티 김길용 수석 · v0.2.12 (2026.06.02)</div>
+    <div id="app-credit">제작: 지엠티 김길용 수석 · v0.2.13 (2026.06.03)</div>
   </div>
   <div id="map-loading" hidden>로딩 중…</div>
-  <script type="module" src="js/main.js?v=119"></script>
+  <script type="module" src="js/main.js?v=133"></script>
 </body>
 </html>

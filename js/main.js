@@ -2,7 +2,7 @@ import { DDF } from "./iso8211.js";
 import { S57 } from "./s57.js";
 import { S52 } from "./s52.js?v=5";
 import { loadCatalog } from "./catalog.js";
-import { Renderer } from "./render.js?v=91";
+import { Renderer } from "./render.js?v=100";
 
 const ATLAS_BY_TABLE = {
   DAY_BRIGHT: "assets/rastersymbols-day.png",
@@ -223,7 +223,14 @@ async function init() {
   rebuildCellList();
   await waitForNonemptyCanvas();
   syncCanvasPixelSizeFromContainer();
-  // 데스크톱·모바일 모두 지역 뷰로 시작해, 화면 영역 셀만 지연 로드한다(시작 가볍게).
+  // 줌아웃 하한(zoomOutMinScale)을 먼저 전역(globalBounds) 오버뷰 기준으로 정한다.
+  // 지역 뷰로 시작하면서 이 단계를 빼면 하한이 '지역 시작 scale'(큼)에 묶여, 특히 위성 모드
+  // (auto3D=false라 globe 임계 완화가 없음)에서 축소가 아예 막힌다. applyZoomOutLimitAfterFit은
+  // Math.min이라, 전역으로 한 번 잡아두면 이후 지역 fit이 하한을 올리지 않는다.
+  state.renderer.vp.fit(state.globalBounds);
+  clampVpScaleForEncOverview(idx);
+  state.renderer.vp.applyZoomOutLimitAfterFit();
+  // 표시는 지역 뷰로 시작(화면 영역 셀만 지연 로드 — 시작 가볍게). 전역 하한은 위에서 유지됨.
   state.renderer.vp.fit(INITIAL_BOUNDS);
   clampVpScaleForEncOverview(idx);
   state.renderer.vp.applyZoomOutLimitAfterFit();
@@ -340,7 +347,19 @@ function draw() {
     state.renderer.render();
     updateScaleBar();
     syncCellListInViewportHighlight();
+    scheduleWarmPanCache();
   });
+}
+
+// 정착 후 유휴 시 팬 캐시(뷰포트보다 큰 풀디테일 오프스크린)를 미리 구워, 다음 이동이
+// 첫 프레임부터 블릿만으로 매끄럽게 되도록 한다. 드래그·줌 애니메이션 중에는 굽지 않는다.
+let _warmTimer = null;
+function scheduleWarmPanCache() {
+  clearTimeout(_warmTimer);
+  _warmTimer = setTimeout(() => {
+    const r = state.renderer;
+    if (r && !dragging && !_zoomAnimRaf && !r.vp.isGlobeView()) r.warmPanCache();
+  }, 150);
 }
 
 // ---- cell loading ----
@@ -1425,6 +1444,7 @@ function syncTiltSlider(deg) {
   if (el) el.value = String(Math.round(deg));
   if (val) val.textContent = `${Math.round(deg)}°`;
 }
+
 canvas.addEventListener("mousedown", (e) => {
   // (버드뷰 Alt+드래그는 현재 비활성화 — 기능 코드는 보존하되 진입만 막음)
   stopGlobeSpin();
@@ -1440,7 +1460,7 @@ window.addEventListener("mouseup", () => {
   const vp = state.renderer?.vp;
   if (vp?.isGlobeView() && moved) startGlobeSpinFromDragVelocity();
   if (moved) {
-    draw(); // final full-detail render at the settled position
+    draw(); // 손을 떼면 전체 디테일로 정착 렌더
     scheduleViewportSync();
   }
 });
@@ -1467,7 +1487,8 @@ window.addEventListener("mousemove", (e) => {
     draw();
   } else {
     vp.cx -= dx / vp.scale; vp.cy += dy / vp.scale;
-    state.renderer.previewPan(e.clientX - startX, e.clientY - startY);
+    // 풀디테일 팬 캐시를 평행이동 블릿(게임 미니맵식) — 개략 없이 정확·초고속.
+    state.renderer.previewPan();
     syncCellListInViewportHighlight();
   }
 });
@@ -1495,9 +1516,9 @@ function smoothZoomTo(targetScale, focusX, focusY) {
     if (!vp.isGlobeView()) vp.zoomAtScreen(focusX, focusY, next);
     else vp.zoomGlobeAtScreen(focusX, focusY, next);
     vp.syncAutoMode();
-    // 머케이터·비전환이면 스냅샷 블릿(거의 0ms), 아니면(globe 진입·모드 전환) 기존 풀 렌더.
-    if (canBlit && !vp.isGlobeView() && !vp._modeTransition) {
-      state.renderer.previewFromSnapshot();
+    // 확대는 스냅샷 블릿(거의 0ms). 축소(블릿이 캔버스를 못 덮음)·globe·모드 전환은
+    // previewFromSnapshot이 false를 반환하므로 풀 렌더로 떨어져 가장자리 여백 없이 그린다.
+    if (canBlit && !vp.isGlobeView() && !vp._modeTransition && state.renderer.previewFromSnapshot()) {
       updateScaleBar();
     } else {
       state.renderer._fastMode = true;
@@ -1546,6 +1567,40 @@ canvas.addEventListener("wheel", (e) => {
   const fy = e.clientY - rect.top;
   smoothZoomTo(target, fx, fy);
 }, { passive: false });
+
+// ── 화면 줌 버튼(+/−)·더블클릭 줌 ── 레퍼런스(OpenLayers) 류 지도 조작 UX.
+const ZOOM_BTN_FACTOR = 1.7;       // 버튼 한 번
+const ZOOM_DBLCLICK_FACTOR = 1.9;  // 더블클릭 한 번
+/** 목표 scale로 부드럽게 줌하되 globe↔mercator 임계에서 한 번 멈춘다(버튼·더블클릭 공통). */
+function zoomTowardScale(target, fx, fy) {
+  const vp = state.renderer.vp;
+  const base = _zoomAnimTarget || vp.scale;
+  if (vp.auto3D && typeof vp.globeThresholdScale === "function") {
+    const th = vp.globeThresholdScale();
+    if ((base < th && target > th) || (base > th && target < th)) target = th;
+  }
+  smoothZoomTo(target, fx, fy);
+}
+function zoomByFactorAtCenter(factor) {
+  const vp = state.renderer.vp;
+  const base = _zoomAnimTarget || vp.scale;
+  zoomTowardScale(base * factor, canvas.width / 2, canvas.height / 2);
+}
+(() => {
+  const zin = document.getElementById("zoom-in");
+  const zout = document.getElementById("zoom-out");
+  if (zin) zin.addEventListener("click", () => zoomByFactorAtCenter(ZOOM_BTN_FACTOR));
+  if (zout) zout.addEventListener("click", () => zoomByFactorAtCenter(1 / ZOOM_BTN_FACTOR));
+})();
+// 더블클릭: 커서 위치를 고정한 채 확대(Shift+더블클릭은 축소).
+canvas.addEventListener("dblclick", (e) => {
+  e.preventDefault();
+  const vp = state.renderer.vp;
+  const rect = canvas.getBoundingClientRect();
+  const fx = e.clientX - rect.left, fy = e.clientY - rect.top;
+  const base = _zoomAnimTarget || vp.scale;
+  zoomTowardScale(base * (e.shiftKey ? 1 / ZOOM_DBLCLICK_FACTOR : ZOOM_DBLCLICK_FACTOR), fx, fy);
+});
 
 /** 문자 입력 중인 폼 요소에만 포커스가 있을 때 맵 단축키 무시 (파일·체크박스 등은 제외) */
 function keyboardTargetIgnoresMapKeys(el) {
@@ -1738,7 +1793,8 @@ canvas.addEventListener("touchmove", (e) => {
     vp.cy += dy / vp.scale;
   }
   touchLast = { x: t.clientX, y: t.clientY };
-  draw();
+  // 평면 이동은 풀디테일 팬 캐시 블릿(게임식·초고속), globe 회전은 풀 렌더.
+  if (vp.isGlobeView()) draw(); else state.renderer.previewPan();
 }, { passive: false });
 canvas.addEventListener("touchend", (e) => {
   if (moved) e.preventDefault();
@@ -1751,7 +1807,9 @@ canvas.addEventListener("touchend", (e) => {
   } else {
     touchLast = null;
     dragging = false;
-    if (state.renderer?.vp?.isGlobeView() && moved) startGlobeSpinFromDragVelocity();
+    const vp = state.renderer?.vp;
+    if (vp?.isGlobeView() && moved) startGlobeSpinFromDragVelocity();
+    else if (moved) draw(); // 평면 이동 종료: 캐시 블릿 대신 전체 디테일로 정착
     if (moved) scheduleViewportSync();
   }
 });

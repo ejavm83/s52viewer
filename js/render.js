@@ -1191,13 +1191,96 @@ class Renderer {
     const vp = this.vp;
     this._snapView = { scale: vp.scale, cx: vp.cx, cy: vp.cy };
   }
-  previewPan(ox, oy) {
-    // globe 모드는 회전(orthographic)이라 평면 이동 프리뷰가 어색하므로 매번 풀 렌더.
+  /** 팬 캐시 여백 배율 — 뷰포트보다 이만큼 크게 풀 렌더해 두고, 이동은 블릿만(게임 미니맵 방식).
+   * 2.0 = 각 변 50% 여백. 이 여백 안의 이동은 블릿만, 벗어나면 한 번 다시 굽는다(유휴 예열로 숨김). */
+  _PAN_CACHE_MARGIN = 2.0;
+
+  /**
+   * 현재 줌의 차트를 **뷰포트보다 큰 오프스크린**에 풀 디테일로 한 번 렌더해 캐시한다.
+   * 큰 면 폴리곤도 한 번만 그리므로(타일 분할은 폴리곤을 타일마다 재그려 더 느림) 이 방식이 유리.
+   * 렌더 타깃을 잠시 오프스크린으로 바꿔 `_renderMercator`를 그대로 재사용한다(스왑 후 복원).
+   */
+  _buildPanCache() {
+    const vp = this.vp;
+    const w = this.canvas.width, h = this.canvas.height;
+    if (w < 2 || h < 2) return;
+    const M = this._PAN_CACHE_MARGIN;
+    const OW = Math.round(w * M), OH = Math.round(h * M);
+    if (!this._panCache) this._panCache = document.createElement("canvas");
+    const oc = this._panCache;
+    if (oc.width !== OW || oc.height !== OH) { oc.width = OW; oc.height = OH; }
+    const octx = oc.getContext("2d");
+    octx.imageSmoothingEnabled = false;
+    const realCanvas = this.canvas, realCtx = this.ctx, realStats = this.lastStats;
+    this.canvas = oc; this.ctx = octx; vp.canvas = oc;
+    try { this._renderMercator(); }
+    finally { this.canvas = realCanvas; this.ctx = realCtx; vp.canvas = realCanvas; this.lastStats = realStats; }
+    this._panCacheView = { cx: vp.cx, cy: vp.cy, scale: vp.scale, ow: OW, oh: OH };
+  }
+
+  /** 현재 뷰가 팬 캐시로 덮이는지(같은 줌 + 여백 안). 아니면 다시 구워야 함. */
+  _panCacheCovers() {
+    const v = this._panCacheView, vp = this.vp;
+    if (!v || !this._panCache) return false;
+    if (Math.abs(v.scale - vp.scale) > vp.scale * 1e-4) return false;
+    const w = this.canvas.width, h = this.canvas.height;
+    if (v.ow !== Math.round(w * this._PAN_CACHE_MARGIN)) return false;
+    if (Math.abs((v.cx - vp.cx) * vp.scale) > (v.ow - w) / 2 - 1) return false;
+    if (Math.abs((vp.cy - v.cy) * vp.scale) > (v.oh - h) / 2 - 1) return false;
+    return true;
+  }
+
+  previewPan() {
     if (this.vp.isGlobeView()) { this.render(); return; }
-    const ctx = this.ctx;
+    if (!this._panCacheCovers()) this._buildPanCache();
+    const ctx = this.ctx, vp = this.vp, v = this._panCacheView;
+    const w = this.canvas.width, h = this.canvas.height;
     ctx.fillStyle = this.s52.color("DEPDW");
-    ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-    if (this._snap) ctx.drawImage(this._snap, ox, oy);
+    ctx.fillRect(0, 0, w, h);
+    if (!v) return;
+    const dx = Math.round((w - v.ow) / 2 + (v.cx - vp.cx) * vp.scale);
+    const dy = Math.round((h - v.oh) / 2 + (vp.cy - v.cy) * vp.scale);
+    ctx.drawImage(this._panCache, dx, dy);
+  }
+
+  /** 정착 직후 유휴 시 — 다음 이동이 즉시 매끄럽도록 현재 뷰 기준 팬 캐시를 미리 구워 둔다. */
+  warmPanCache() {
+    if (this.vp.isGlobeView()) return;
+    this._buildPanCache();
+  }
+
+  /**
+   * 패닝 프리뷰용 저비용 배경: 개략 셀(큰 CSCL)의 **면 채움(AC)만** 현재 뷰포트에 그린다.
+   * 드래그로 드러난 영역이 빈(바다색) 채로 남지 않게 개략 바다·육지로 채우는 용도라, 선·심볼·
+   * 사운딩·텍스트는 생략한다. (호출 측에서 `_mercScreen`을 설정해 둔다.)
+   */
+  _drawCoarseAreaBackdrop(winMinX, winMaxX, winMinY, winMaxY) {
+    const table = this.s52.currentTable;
+    const COARSE = 400000; // 1:400k 이상(개략 밴드)만 — 적고 넓어 저비용
+    for (const cell of this.cells.values()) {
+      if (!cell.visible || !cell.loaded || !cell.features) continue;
+      const cscl = cell.bounds && cell.bounds.cscl;
+      if (!cscl || cscl < COARSE) continue; // 상세 셀은 스냅샷이 덮으므로 제외
+      const cmb = this._cellMercBbox(cell);
+      if (cmb && (cmb[1] < winMinX || cmb[0] > winMaxX || cmb[3] < winMinY || cmb[2] > winMaxY)) continue;
+      for (const feat of cell.features) {
+        if (!feat.geom || isEncBoundaryFeat(feat)) continue;
+        this._prep(feat);
+        const pg = feat._pg;
+        if (!pg || pg.type !== "Area") continue;
+        const b = feat._bbox;
+        if (b && (b[2] < winMinX || b[0] > winMaxX || b[3] < winMinY || b[1] > winMaxY)) continue;
+        if (feat._resTable !== table) {
+          const r = this.s52.resolve(feat, "Simplified");
+          feat._res = { ops: r.ops, displayCat: r.displayCat, prio: prioIndex(r.dispPrio) };
+          feat._resTable = table;
+        }
+        const ops = feat._res.ops;
+        for (let i = 0; i < ops.length; i++) {
+          if (ops[i].op === "AC") this._fillArea(pg.rings, ops[i].color, 1);
+        }
+      }
+    }
   }
 
   /**
@@ -1209,7 +1292,7 @@ class Renderer {
    */
   previewFromSnapshot() {
     const sv = this._snapView;
-    if (!sv || !this._snap) { this.render(); return; }
+    if (!sv || !this._snap) return false;
     const vp = this.vp;
     const w = this.canvas.width, h = this.canvas.height;
     const k = vp.scale / sv.scale;
@@ -1218,10 +1301,20 @@ class Renderer {
     const ctx = this.ctx;
     ctx.fillStyle = this.s52.color("DEPDW");
     ctx.fillRect(0, 0, w, h);
+    // 축소(k<1)는 스냅샷이 캔버스를 못 덮어 가장자리에 여백이 생긴다 — 풀 렌더(느림) 대신
+    // 개략 면 채움(+세계 육지)을 저비용으로 깔아 채운다. 확대(k≥1)는 스냅샷이 캔버스를 덮어 불필요.
+    if (k < 1) {
+      this._mercScreen = { s: vp.scale, cx: vp.cx, cy: vp.cy, hw: w * 0.5, hh: h * 0.5 };
+      const halfW = (w / 2) / vp.scale * 1.05, halfH = (h / 2) / vp.scale * 1.05;
+      this._drawMercatorWorldOverlay(vp.cx - halfW, vp.cx + halfW, vp.cy - halfH, vp.cy + halfH);
+      this._drawCoarseAreaBackdrop(vp.cx - halfW, vp.cx + halfW, vp.cy - halfH, vp.cy + halfH);
+      this._mercScreen = null;
+    }
     const prevSmooth = ctx.imageSmoothingEnabled;
     ctx.imageSmoothingEnabled = true; // 줌 스케일 블릿은 부드럽게(최종 풀 렌더에서 선명 복원)
     ctx.drawImage(this._snap, 0, 0, w, h, tx, ty, w * k, h * k);
     ctx.imageSmoothingEnabled = prevSmooth;
+    return true;
   }
 
   /**
@@ -1413,18 +1506,17 @@ class Renderer {
   }
 
   /**
-   * Natural Earth 110m 개략 육지/국경을 쓸지.
-   * ENC가 뷰와 겹치면 false(ENC만) — 개략 지도와 ENC **배타** 표시.
-   * 상세 축척·극단 확대에서도 false.
+   * Natural Earth 110m 개략 육지/국경을 **ENC 아래 배경**으로 그릴지.
+   * 축소 뷰에서는 항상 그린다 — ENC가 적재 안 됐거나 커버하지 않는 영역이 빈(잘린) 채로
+   * 남지 않도록 세계 육지가 빈틈을 채운다. ENC 면(DEPARE 바다·LNDARE 육지)이 그 위에 덮이므로
+   * ENC가 있는 곳에서는 세계 육지가 보이지 않는다.
+   * (이전엔 'ENC가 뷰와 겹치면 끔(배타)' + 'denom 임계 미만이면 끔'이라, 일부만 적재된 광역
+   *  뷰에서 미커버 영역이 통째 비어 보이는 문제가 있었다.)
+   * 충분히 확대(scale>30000)되면 ENC가 화면을 채우므로 끈다.
    */
   _shouldDrawNaturalEarthWorldLand(winMinX, winMaxX, winMinY, winMaxY) {
-    const vp = this.vp;
-    // forceWorldLand면 줌·ENC 겹침과 무관하게 항상 세계 육지를 그린다(현재 UI에서 설정하지 않음).
     if (this.forceWorldLand) return true;
-    if (vp.scale > 30000) return false;
-    if (vp.scaleDenominator() < MERCATOR_WORLD_OVERLAY_MIN_DENOM) return false;
-    if (this._mercViewportIntersectsDisplayedEncCell(winMinX, winMaxX, winMinY, winMaxY)) return false;
-    return true;
+    return this.vp.scale <= 30000;
   }
 
   /**

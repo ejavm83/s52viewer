@@ -1,5 +1,14 @@
 # 변경 기록
 
+## v0.2.13 (2026.06.03)
+
+- **화면 줌 UI**: 우하단 +/− 버튼, 캔버스 더블클릭(Shift+더블클릭 축소)으로 휠과 동일한 부드러운 줌·globe 임계 스냅 적용 (`index.html`, `main.js`).
+- **팬 성능**: 뷰보다 큰 오프스크린에 풀디테일 머케이터를 미리 구워 드래그·터치 이동은 블릿만; 정착 후 유휴 시 `warmPanCache`로 예열 (`render.js`, `main.js`).
+- **줌 축소 스냅샷**: 축소(k<1) 시 가장자리 빈틈을 Natural Earth·개략 셀 면(AC)으로 메우고, `previewFromSnapshot`이 실패하면 풀 렌더로 대체 (`render.js`, `main.js`).
+- **초기 zoomOutMinScale**: 인덱스 로드 직후 전역 `fit`으로 하한을 한 번 잡은 뒤 지역 `INITIAL_BOUNDS`로 표시해, 위성 모드에서 축소가 막히던 경우를 완화 (`main.js`).
+- **Natural Earth 배경**: 광역(scale≤30000)에서는 ENC와 겹쳐도 세계 육지를 ENC 아래에 깔아 미적재 영역이 비어 보이지 않게 함 (`render.js`).
+- **표기**: 앱 하단 크레딧·패키지 v0.2.13, `main.js`·`render.js` 캐시 버스트(`index.html`, `main.js`).
+
 ## v0.2.12 (2026.06.02)
 
 - **표기**: 앱 하단 크레딧·패키지 v0.2.12, `main.js` 캐시 버스트(`index.html`).

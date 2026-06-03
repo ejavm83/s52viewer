@@ -4,7 +4,7 @@
 // Binds 0.0.0.0 so other machines on the LAN can open http://<this-host-ip>:<port>/
 import http from "node:http";
 import os from "node:os";
-import { readFile } from "node:fs";
+import { readFile, existsSync } from "node:fs";
 import { mkdir, writeFile, readFile as readFileP } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,6 +24,7 @@ const port =
 const MIME = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".xml": "application/xml; charset=utf-8",
   ".csv": "text/csv; charset=utf-8",
@@ -32,6 +33,19 @@ const MIME = {
   ".md": "text/markdown; charset=utf-8",
   ".000": "application/octet-stream",
 };
+
+const rootResolved = path.resolve(root);
+
+/** URL 경로(쿼리 제외) → 디스크 절대 경로. 디렉터리 탈출 시 null. */
+function resolvedStaticFile(urlPathNoQuery) {
+  let rel = urlPathNoQuery;
+  if (rel === "/" || rel === "") rel = "index.html";
+  else rel = rel.replace(/^\/+/u, "");
+  const abs = path.resolve(rootResolved, rel);
+  const relToRoot = path.relative(rootResolved, abs);
+  if (relToRoot.startsWith(".." + path.sep) || relToRoot === ".." || path.isAbsolute(relToRoot)) return null;
+  return abs;
+}
 
 // ─── ENC raster tile endpoint: server-side S-52 render → PNG, disk-cached ───
 // node-canvas는 첫 타일 요청 때만 동적 import해 정적 서버 시작을 가볍게 유지한다.
@@ -122,17 +136,22 @@ http
       });
       return;
     }
-    if (urlPath === "/") urlPath = "/index.html";
-    const filePath = path.join(root, urlPath);
-    if (!filePath.startsWith(root)) { res.writeHead(403); res.end("forbidden"); return; }
+    const filePath = resolvedStaticFile(urlPath);
+    if (filePath == null) { res.writeHead(403); res.end("forbidden"); return; }
     readFile(filePath, (err, data) => {
-      if (err) { res.writeHead(404); res.end("not found"); return; }
+      if (err) {
+        const ext404 = path.extname(path.basename(urlPath)).toLowerCase();
+        const ct = MIME[ext404] || "text/plain; charset=utf-8";
+        res.writeHead(404, { "Content-Type": ct });
+        res.end(ext404 === ".css" ? "/* not found on server */\n" : "not found");
+        return;
+      }
       const ext = path.extname(filePath).toLowerCase();
       const headers = { "Content-Type": MIME[ext] || "application/octet-stream" };
       // 변하지 않는 정적 자산(ENC 셀·심볼·카탈로그)은 장기 캐시 → 재방문 시 네트워크 0.
       if (ext === ".000" || ext === ".png" || ext === ".csv" || ext === ".xml") {
         headers["Cache-Control"] = "public, max-age=31536000, immutable";
-      } else if (ext === ".js") {
+      } else if (ext === ".js" || ext === ".mjs") {
         headers["Cache-Control"] = "public, max-age=86400"; // ?v= 쿼리로 무효화하므로 안전
       }
       res.writeHead(200, headers);
@@ -140,6 +159,11 @@ http
     });
   })
   .listen(port, "0.0.0.0", () => {
+    for (const v of ["vendor/ol.css", "vendor/ol.js"]) {
+      if (!existsSync(path.join(root, v))) {
+        console.error(`[serve] missing ${v} — OpenLayers will not load; commit vendor/ and redeploy.`);
+      }
+    }
     // 타일 렌더 엔진을 백그라운드로 예열 — 첫 타일 요청의 일회성 init 지연을 숨긴다.
     // 정적 서빙만 쓰는 경우에도 실패는 무시(node-canvas 미설치 환경 등).
     import("./lib/render-tile.mjs").then((m) => m.warmup()).then(

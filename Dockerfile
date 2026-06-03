@@ -27,5 +27,8 @@ RUN node scripts/build-cell-index.mjs || true
 
 # 플랫폼이 PORT 환경변수를 주입하면 serve.js가 그걸 사용(없으면 8080)
 ENV PORT=8080
+# 512MB 같은 소형 인스턴스에서 Node 힙이 컨테이너 한도를 넘겨 OOM-kill되지 않게 상한을 둔다.
+# (기본 Node 힙은 ~2GB라 한도 없이 자라다 죽음.) 더 작은 호스트면 값을 낮추면 됨.
+ENV NODE_OPTIONS=--max-old-space-size=420
 EXPOSE 8080
 CMD ["node", "serve.js"]

@@ -14,8 +14,10 @@
   const R = 6378137; // web-mercator earth radius (vp.scale: screen px per mercator-radian → m/px = R/scale)
   const PAL = { DAY_BRIGHT: "day", DUSK: "dusk", NIGHT: "night" };
   const DISP = { Displaybase: "base", Standard: "standard", Other: "other" };
+  // 타일 서버 베이스 URL(meta). 비우면 동일 출처(로컬 serve.js); 별도 서버면 그 절대 URL.
+  const TILE_BASE = (document.querySelector('meta[name="enc-tile-base"]')?.content || "").trim().replace(/\/+$/, "");
 
-  function start(app) {
+  function enableTiles(app) {
     if (typeof ol === "undefined") { console.warn("tile-mercator: OpenLayers(ol) 미로드"); return; }
     const renderer = app.state.renderer, vp = renderer.vp;
     renderer.tileMode = true; // 평면 차트는 OL이 표시 → 벡터 플랫 렌더 생략
@@ -24,9 +26,10 @@
     const tileUrl = () => {
       const p = PAL[renderer.s52.currentTable] || "day";
       const d = DISP[renderer.minDisplayCat] || "standard";
-      return `/tile/{z}/{x}/{y}.png?p=${p}` + (d !== "standard" ? `&disp=${d}` : "");
+      return `${TILE_BASE}/tile/{z}/{x}/{y}.png?p=${p}` + (d !== "standard" ? `&disp=${d}` : "");
     };
-    const encTiles = new ol.source.XYZ({ url: tileUrl(), maxZoom: 18, minZoom: 2, transition: 120 });
+    // crossOrigin: 외부 타일 서버 텍스처를 OL 캔버스/WebGL이 쓸 수 있게(서버는 ACAO:* 응답)
+    const encTiles = new ol.source.XYZ({ url: tileUrl(), maxZoom: 18, minZoom: 2, transition: 120, crossOrigin: "anonymous" });
 
     // #chart 캔버스 바로 아래에 OL 지도 삽입(상호작용·컨트롤 없음 — #chart/main.js가 처리)
     const stage = document.getElementById("stage");
@@ -67,6 +70,24 @@
     }
     requestAnimationFrame(frame);
     console.log("tile-mercator: 하이브리드 활성(평면=OL 타일, 축소=벡터 지구본)");
+  }
+
+  // 타일 서버 가용성 프로브 → 가용할 때만 타일 모드 활성. 정적 호스트(Vercel 등)엔 /tile
+  // 서버가 없어 404가 나므로, 그 경우 tileMode를 켜지 않아 기존 벡터 렌더가 그대로 동작한다.
+  function start(app) {
+    if (typeof ol === "undefined") { console.warn("tile-mercator: OpenLayers(ol) 미로드 → 벡터 유지"); return; }
+    let done = false;
+    const decide = (ok, why) => {
+      if (done) return; done = true;
+      if (ok) enableTiles(app);
+      else console.warn("tile-mercator: /tile 미가용(" + why + ") → 벡터 렌더 유지(정적 호스트?)");
+    };
+    const probe = new Image();
+    probe.crossOrigin = "anonymous";
+    probe.onload = () => decide(probe.naturalWidth > 0, "empty");
+    probe.onerror = () => decide(false, "404/error");
+    probe.src = `${TILE_BASE}/tile/12/3516/1621.png?p=day&probe=1`;
+    setTimeout(() => decide(false, "timeout"), 6000);
   }
 
   // main.js의 비동기 init 완료 대기(window.s52app.state.renderer)

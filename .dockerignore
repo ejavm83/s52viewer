@@ -1,0 +1,9 @@
+# Docker 빌드 컨텍스트에서 제외 — 특히 node_modules는 반드시 제외해야
+# (로컬 Windows 바이너리가 컨테이너의 리눅스 node-canvas 바이너리를 덮어쓰지 않게)
+node_modules
+tiles
+.git
+.vercel
+.claude
+test
+*.log

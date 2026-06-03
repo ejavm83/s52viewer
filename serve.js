@@ -114,10 +114,11 @@ http
       const settings = tileSettings(req.url.split("?")[1] || "");
       const z = +mTile[1], x = +mTile[2], y = +mTile[3];
       getTilePng(z, x, y, settings).then((png) => {
-        res.writeHead(200, { "Content-Type": "image/png", "Cache-Control": "public, max-age=31536000, immutable" });
+        // CORS: 별도 타일 서버일 때 Vercel 등 다른 출처의 앱이 타일을 가져올 수 있게 허용
+        res.writeHead(200, { "Content-Type": "image/png", "Cache-Control": "public, max-age=31536000, immutable", "Access-Control-Allow-Origin": "*" });
         res.end(png);
       }).catch((err) => {
-        res.writeHead(500); res.end("tile render error: " + (err && err.message || err));
+        res.writeHead(500, { "Access-Control-Allow-Origin": "*" }); res.end("tile render error: " + (err && err.message || err));
       });
       return;
     }

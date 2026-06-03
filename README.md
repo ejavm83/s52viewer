@@ -1,19 +1,22 @@
 # S-52 ENC Viewer
 
-브라우저에서 **IHO S-57 ENC**(`.000`)를 읽고, **S-52 표현 규칙**에 가깝게 **2D 캔버스**에 그리는 정적 웹 뷰어입니다. 파싱·표현·렌더링은 클라이언트 **JavaScript(ES 모듈)**에서 수행하고, Node 서버는 정적 파일과 셀 인덱스 API만 제공합니다.
+**기본 화면(`index.html`)**은 브라우저에서 **OpenLayers**로 **Web Mercator XYZ 타일**을 붙이고, 각 타일 PNG는 **Node 서버**가 `000/`의 **IHO S-57 ENC**를 읽어 **동일한 S-52 파이프라인**(`js/s52.js`·`js/render.js`)으로 **node-canvas**에 그린 뒤 디스크(`tiles/…`)에 캐시합니다. 즉 “지도 그리기”의 무게는 서버 쪽에 있고, 클라이언트는 타일 합성·UI만 담당합니다.
+
+별도로 저장소에는 **클라이언트에서만** `.000`을 fetch·파싱해 **2D 캔버스**에 직접 그리던 **`js/main.js` 벡터 뷰** 코드가 남아 있으나, **현재 기본 진입점에서는 로드하지 않습니다**(타일 방식과 병행 유지·참고용).
 
 ## 특징
 
-- S-57 피처를 S-52 룩업에 맞춰 해석 후 면·선·심볼·텍스트 등으로 렌더링
-- `000/`에 두거나 **파일·폴더 선택**·드래그 앤 드롭으로 로컬 ENC 열기
-- 색상표(Day / Dusk / Night), 표시범주(Base / Standard / All), 셀 격자, 선택적 **육지 위성 오버레이**(Esri World Imagery)
-- 3D 지구본·머케이터 전환, 팬·줌·터치·키보드 단축키, 뷰포트 즐겨찾기(1–9)
-- 툴바 제목(로고) 클릭 시 **캡처용 프레이밍**(부산항·가덕도 일대)으로 뷰 이동
+- **서버 타일**: `GET /tile/{z}/{x}/{y}.png` — 팔레트·표시범주 등은 쿼리로 구분, 결과는 `tiles/<설정키>/…`에 장기 캐시
+- **OpenLayers** 팬·줌(우하단 ±, 휠 등), 셀 인덱스 기반 **사이드바 목록·검색·행 클릭 fly-to**, **셀 경계 격자** 오버레이
+- 색상표(Day / Dusk / Night), 표시범주(Base / Standard / All) — 툴바 순환 버튼과 타일 URL이 연동
+- 툴바 제목(로고) 클릭 시 **부산항 일대**로 뷰 이동(`tile-app.js`)
+- (참고) **`tiles.html` / `viewer.html`**: 타일 전용·경량 UI 페이지
+- (참고) **`js/main.js` 벡터 뷰**가 지원하던 항목: 로컬 ENC 열기, 위성 오버레이, 3D 지구본, 오브젝트 패널 등 — 기본 `index.html` 타일 모드에서는 비활성·미적용 UI가 숨겨짐
 
 ## 요구 사항
 
-- **Node.js** 18+ 권장(로컬 서버·셀 인덱스 빌드·테스트용)
-- 최신 **Chromium / Firefox / Safari** 등 ES 모듈·`OffscreenCanvas`/Worker를 지원하는 브라우저
+- **Node.js** 18+ 권장. **`npm run serve`** 시 타일 렌더를 위해 **`canvas`(node-canvas)** 네이티브 빌드가 필요합니다(플랫폼별 빌드 도구).
+- 브라우저: **OpenLayers**가 동작하는 최신 **Chromium / Firefox / Safari** 등
 
 ## 빠른 시작
 
@@ -31,9 +34,11 @@ npm run serve        # 기본 http://localhost:8000/
 
 | 스크립트 | 설명 |
 |----------|------|
-| `npm run serve` | `serve.js`로 정적 서버 기동(포트: 인자·`PORT`·기본 8000) |
+| `npm run serve` | `serve.js`로 정적 서버 + **`/tile/{z}/{x}/{y}.png`** ENC 래스터 타일(캐시·node-canvas) |
 | `npm run build` | `000/` 기준으로 `cell-index.json` 생성 |
 | `npm test` | 파서 등 단위 테스트(`test/parse-test.mjs`) |
+
+타일 예열·배치 생성은 패키지 스크립트에 없고, 필요 시 예: `node scripts/prerender-tiles.mjs …`, `node scripts/prerender-coverage.mjs` 등을 직접 실행합니다(`docs/코드-설명.md` 참고).
 
 ## 문서
 

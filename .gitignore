@@ -7,3 +7,4 @@ Thumbs.db
 
 # Generated at build time (Vercel / npm run build)
 /cell-index.json
+tiles/

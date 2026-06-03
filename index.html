@@ -295,6 +295,18 @@
     }
   }
 </style>
+<link rel="stylesheet" href="vendor/ol.css" />
+<style>
+  /* 하이브리드: 평면 차트 = OL 서버타일(#olmap), 지구본 = 기존 벡터 캔버스(#chart).
+     z-index: #sky(0) < #olmap(1) < #chart(2). 평면에선 캔버스가 투명이라 OL이 비치고,
+     지구본 모드에선 #olmap을 숨겨 캔버스의 지구본이 보인다(가장자리는 #sky). */
+  #olmap { position: absolute; inset: 0; z-index: 1; background: #d4eaee; }
+  body[data-p="dusk"]  #olmap { background: #4a5b64; }
+  body[data-p="night"] #olmap { background: #0a141b; }
+  #stage > #chart { z-index: 2; }
+  #stage > #scale-bar, #stage > #zoom-ctrl { z-index: 3; }
+  .ol-attribution, .ol-zoom { display: none; } /* 기존 #scale-bar·#zoom-ctrl UI 사용 */
+</style>
 </head>
 <body class="sidebar-collapsed">
   <div id="toolbar">
@@ -386,9 +398,11 @@
     <div id="status">초기화 중…</div>
     <h1 class="mobile-app-title app-logo" tabindex="0" role="button" aria-label="캡처용 화면으로 이동" title="캡처용 화면(부산항·가덕도 일대)으로 이동">S-52 ENC Viewer</h1>
     <a href="about.html" class="doc-page doc-page-mobile">프로그램 설명</a>
-    <div id="app-credit">제작: 지엠티 김길용 수석 · v0.2.13 (2026.06.03)</div>
+    <div id="app-credit">제작: 지엠티 김길용 수석 · v0.3.0 (2026.06.03)</div>
   </div>
   <div id="map-loading" hidden>로딩 중…</div>
-  <script type="module" src="js/main.js?v=133"></script>
+  <script src="vendor/ol.js"></script>
+  <script type="module" src="js/main.js?v=136"></script>
+  <script src="js/tile-mercator.js?v=2"></script>
 </body>
 </html>

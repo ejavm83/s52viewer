@@ -2,7 +2,7 @@ import { DDF } from "./iso8211.js";
 import { S57 } from "./s57.js";
 import { S52 } from "./s52.js?v=5";
 import { loadCatalog } from "./catalog.js";
-import { Renderer } from "./render.js?v=100";
+import { Renderer } from "./render.js?v=102";
 
 const ATLAS_BY_TABLE = {
   DAY_BRIGHT: "assets/rastersymbols-day.png",
@@ -1458,11 +1458,18 @@ window.addEventListener("mouseup", () => {
   if (!dragging) return;
   dragging = false;
   const vp = state.renderer?.vp;
-  if (vp?.isGlobeView() && moved) startGlobeSpinFromDragVelocity();
-  if (moved) {
-    draw(); // 손을 떼면 전체 디테일로 정착 렌더
-    scheduleViewportSync();
+  if (!moved) return;
+  if (vp?.isGlobeView()) {
+    startGlobeSpinFromDragVelocity();
+    draw();
+  } else if (state.renderer._panCacheCovers && state.renderer._panCacheCovers()) {
+    // 드래그 중 보던 팬 캐시 블릿이 이미 풀 디테일 — 정착 풀렌더 생략(마우스업 지연 제거).
+    // 마지막 mousemove 블릿이 이미 정확한 화면이고, 다음 이동용 캐시는 아래 예열에서 준비한다.
+  } else {
+    draw(); // 캐시가 뷰를 못 덮음(여백 초과) — 풀렌더로 정착
   }
+  scheduleWarmPanCache();
+  scheduleViewportSync();
 });
 window.addEventListener("mousemove", (e) => {
   if (tiltDragging) {
@@ -1808,9 +1815,17 @@ canvas.addEventListener("touchend", (e) => {
     touchLast = null;
     dragging = false;
     const vp = state.renderer?.vp;
-    if (vp?.isGlobeView() && moved) startGlobeSpinFromDragVelocity();
-    else if (moved) draw(); // 평면 이동 종료: 캐시 블릿 대신 전체 디테일로 정착
-    if (moved) scheduleViewportSync();
+    if (moved) {
+      if (vp?.isGlobeView()) {
+        startGlobeSpinFromDragVelocity(); // globe는 스핀 애니메이션이 자체 렌더
+      } else if (state.renderer._panCacheCovers && state.renderer._panCacheCovers()) {
+        // 팬 캐시 블릿이 이미 풀 디테일 — 정착 풀렌더 생략(터치 업 지연 제거)
+      } else {
+        draw(); // 캐시가 뷰를 못 덮음 — 풀렌더로 정착
+      }
+      scheduleWarmPanCache();
+      scheduleViewportSync();
+    }
   }
 });
 canvas.addEventListener("touchcancel", () => {

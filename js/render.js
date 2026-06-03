@@ -901,8 +901,12 @@ class Renderer {
         const easedT = t * t * (3 - 2 * t); // smoothstep
         const ctx0 = this.ctx;
         const w0 = this.canvas.width, h0 = this.canvas.height;
-        ctx0.fillStyle = "#000";
-        ctx0.fillRect(0, 0, w0, h0);
+        if (this.tileMode) {
+          ctx0.clearRect(0, 0, w0, h0); // 타일 모드: 투명 비움 → globe가 아래 OL 타일로 디졸브
+        } else {
+          ctx0.fillStyle = "#000";
+          ctx0.fillRect(0, 0, w0, h0);
+        }
         // 나가는 모드(이전 mode 상태로 일시 복원)
         const curMode = this.vp.mode;
         ctx0.save();
@@ -930,6 +934,16 @@ class Renderer {
   _renderMercator() {
     const ctx = this.ctx, vp = this.vp;
     const w = this.canvas.width, h = this.canvas.height;
+    // 타일 모드: 평면 차트는 캔버스 아래의 OL 서버타일이 표시한다. 무거운 벡터 패스(면·선·
+    // 심볼·텍스트)를 전부 건너뛰고 캔버스를 투명하게 비워 OL이 비쳐 보이게 한다. 전환 중에는
+    // render()의 cross-fade가 이미 캔버스를 비웠으므로 다시 비우지 않는다(globe 알파를 지우지 않게).
+    // 지구본(_renderGlobe)은 이 분기와 무관 — 기존대로 벡터로 그려진다.
+    if (this.tileMode) {
+      if (!vp._modeTransition) ctx.clearRect(0, 0, w, h);
+      this.lastStats = { drawn: 0, culled: 0, denom: Math.round(vp.scaleDenominator()) };
+      this._mercScreen = null;
+      return;
+    }
     this._mercScreen = { s: vp.scale, cx: vp.cx, cy: vp.cy, hw: w * 0.5, hh: h * 0.5 };
     ctx.fillStyle = this.s52.color("DEPDW");
     ctx.fillRect(0, 0, w, h);
@@ -1232,6 +1246,8 @@ class Renderer {
 
   previewPan() {
     if (this.vp.isGlobeView()) { this.render(); return; }
+    // 타일 모드: 평면 팬은 아래 OL 타일이 처리 → 캔버스는 투명 유지(불투명 배경으로 OL 가리지 않게)
+    if (this.tileMode) { this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height); return; }
     if (!this._panCacheCovers()) this._buildPanCache();
     const ctx = this.ctx, vp = this.vp, v = this._panCacheView;
     const w = this.canvas.width, h = this.canvas.height;
@@ -1243,9 +1259,25 @@ class Renderer {
     ctx.drawImage(this._panCache, dx, dy);
   }
 
-  /** 정착 직후 유휴 시 — 다음 이동이 즉시 매끄럽도록 현재 뷰 기준 팬 캐시를 미리 구워 둔다. */
+  /** 현재 뷰가 팬 캐시 여백의 절반 이상을 남기고 덮이는지 — 그러면 재빌드 불필요(freeze 회피). */
+  _panCacheComfortable() {
+    const v = this._panCacheView, vp = this.vp;
+    if (!v || !this._panCache) return false;
+    if (Math.abs(v.scale - vp.scale) > vp.scale * 1e-4) return false;
+    const w = this.canvas.width, h = this.canvas.height;
+    if (v.ow !== Math.round(w * this._PAN_CACHE_MARGIN)) return false;
+    const driftX = Math.abs((v.cx - vp.cx) * vp.scale);
+    const driftY = Math.abs((vp.cy - v.cy) * vp.scale);
+    const maxX = (v.ow - w) / 2, maxY = (v.oh - h) / 2;
+    return driftX < maxX * 0.5 && driftY < maxY * 0.5;
+  }
+
+  /** 정착 직후 유휴 시 — 다음 이동이 즉시 매끄럽도록 현재 뷰 기준 팬 캐시를 미리 구워 둔다.
+   * 단, 여백이 절반 이상 남아 있으면(대부분의 짧은 이동) 재빌드를 건너뛰어 release 직후 freeze를 없앤다.
+   * 캐시가 여백 가장자리에 가까워졌을 때만 한 번 다시 굽는다(드물게). */
   warmPanCache() {
     if (this.vp.isGlobeView()) return;
+    if (this._panCacheComfortable()) return;
     this._buildPanCache();
   }
 
@@ -1295,6 +1327,8 @@ class Renderer {
     if (!sv || !this._snap) return false;
     const vp = this.vp;
     const w = this.canvas.width, h = this.canvas.height;
+    // 타일 모드: 평면 줌은 아래 OL 타일이 처리 → 캔버스 투명 유지(true 반환해 풀렌더 폴백 방지)
+    if (this.tileMode) { this.ctx.clearRect(0, 0, w, h); return true; }
     const k = vp.scale / sv.scale;
     const tx = w * 0.5 * (1 - k) + (sv.cx - vp.cx) * vp.scale;
     const ty = h * 0.5 * (1 - k) - (sv.cy - vp.cy) * vp.scale;

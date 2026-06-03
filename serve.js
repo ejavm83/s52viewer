@@ -5,6 +5,7 @@
 import http from "node:http";
 import os from "node:os";
 import { readFile } from "node:fs";
+import { mkdir, writeFile, readFile as readFileP } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildCellIndex, listEncCellNames } from "./lib/cell-index.mjs";
@@ -31,6 +32,53 @@ const MIME = {
   ".md": "text/markdown; charset=utf-8",
   ".000": "application/octet-stream",
 };
+
+// ─── ENC raster tile endpoint: server-side S-52 render → PNG, disk-cached ───
+// node-canvas는 첫 타일 요청 때만 동적 import해 정적 서버 시작을 가볍게 유지한다.
+// 같은 타일의 동시 렌더는 coalesce하고, 렌더 결과는 tiles/{z}/{x}/{y}.png로 디스크
+// 캐시(재요청·재방문 시 렌더 0회). 레퍼런스 WMS처럼 "한 번 굽고 캐시" 방식.
+let _renderTile = null;
+const _tileInflight = new Map(); // "z/x/y" -> Promise<Buffer>
+const TILE_DIR = path.join(root, "tiles");
+
+// 쿼리스트링 → S-52 설정. 기본값은 예열된 'day' 타일과 일치(palette day, 표시 standard,
+// 등고선 2/10/20, SCAMIN on)하도록 잡아, 기본 요청은 디스크 캐시를 그대로 쓴다.
+function tileSettings(q) {
+  const g = (re) => { const m = q.match(re); return m ? m[1] : null; };
+  const num = (re, d) => { const v = g(re); return v != null ? +v : d; };
+  return {
+    palette: g(/(?:^|&)p=(day|dusk|night)/) || "day",
+    display: g(/(?:^|&)disp=(base|standard|other)/) || "standard",
+    shallow: num(/(?:^|&)shallow=(\d+(?:\.\d+)?)/, 2),
+    safety: num(/(?:^|&)safety=(\d+(?:\.\d+)?)/, 10),
+    deep: num(/(?:^|&)deep=(\d+(?:\.\d+)?)/, 20),
+    scamin: !/(?:^|&)scamin=0/.test(q),
+  };
+}
+function settingsKey(s) {
+  let k = s.palette;
+  const x = [];
+  if (s.display !== "standard") x.push(s.display);
+  if (!(s.shallow === 2 && s.safety === 10 && s.deep === 20)) x.push(`c${s.shallow}-${s.safety}-${s.deep}`);
+  if (!s.scamin) x.push("nsc");
+  return x.length ? `${k}__${x.join("_")}` : k;
+}
+
+async function getTilePng(z, x, y, settings) {
+  const key = settingsKey(settings);
+  const file = path.join(TILE_DIR, key, String(z), String(x), `${y}.png`);
+  try { return await readFileP(file); } catch { /* cache miss → render */ }
+  const ck = `${key}/${z}/${x}/${y}`;
+  if (_tileInflight.has(ck)) return _tileInflight.get(ck);
+  const job = (async () => {
+    if (!_renderTile) ({ renderTile: _renderTile } = await import("./lib/render-tile.mjs"));
+    const png = await _renderTile(z, x, y, { tileSize: 256, ...settings });
+    try { await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, png); } catch { /* best-effort */ }
+    return png;
+  })();
+  _tileInflight.set(ck, job);
+  try { return await job; } finally { _tileInflight.delete(ck); }
+}
 
 http
   .createServer((req, res) => {
@@ -61,6 +109,18 @@ http
       });
       return;
     }
+    const mTile = urlPath.match(/^\/tile\/(\d+)\/(\d+)\/(\d+)\.png$/);
+    if (mTile) {
+      const settings = tileSettings(req.url.split("?")[1] || "");
+      const z = +mTile[1], x = +mTile[2], y = +mTile[3];
+      getTilePng(z, x, y, settings).then((png) => {
+        res.writeHead(200, { "Content-Type": "image/png", "Cache-Control": "public, max-age=31536000, immutable" });
+        res.end(png);
+      }).catch((err) => {
+        res.writeHead(500); res.end("tile render error: " + (err && err.message || err));
+      });
+      return;
+    }
     if (urlPath === "/") urlPath = "/index.html";
     const filePath = path.join(root, urlPath);
     if (!filePath.startsWith(root)) { res.writeHead(403); res.end("forbidden"); return; }
@@ -79,6 +139,11 @@ http
     });
   })
   .listen(port, "0.0.0.0", () => {
+    // 타일 렌더 엔진을 백그라운드로 예열 — 첫 타일 요청의 일회성 init 지연을 숨긴다.
+    // 정적 서빙만 쓰는 경우에도 실패는 무시(node-canvas 미설치 환경 등).
+    import("./lib/render-tile.mjs").then((m) => m.warmup()).then(
+      () => console.log("tile render engine ready (/tile/{z}/{x}/{y}.png)")
+    ).catch((e) => console.log("tile engine warmup skipped:", e && e.message || e));
     console.log(`S-52 viewer (this machine): http://localhost:${port}/`);
     const nets = os.networkInterfaces();
     const addrs = [];

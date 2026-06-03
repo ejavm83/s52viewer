@@ -1,11 +1,16 @@
 {
   "name": "s-52-viewer",
-  "version": "0.2.13",
+  "version": "0.3.0",
   "type": "module",
   "private": true,
   "scripts": {
     "build": "node scripts/build-cell-index.mjs",
     "serve": "node serve.js",
     "test": "node test/parse-test.mjs"
+  },
+  "dependencies": {
+    "@xmldom/xmldom": "^0.9.10",
+    "canvas": "^3.2.3",
+    "linkedom": "^0.18.12"
   }
 }

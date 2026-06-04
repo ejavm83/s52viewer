@@ -4,6 +4,7 @@
 // Binds 0.0.0.0 so other machines on the LAN can open http://<this-host-ip>:<port>/
 import http from "node:http";
 import os from "node:os";
+import { Buffer } from "node:buffer";
 import { readFile, existsSync } from "node:fs";
 import { mkdir, writeFile, readFile as readFileP } from "node:fs/promises";
 import path from "node:path";
@@ -36,6 +37,12 @@ const MIME = {
 };
 
 const rootResolved = path.resolve(root);
+
+/** 브라우저 기본 요청 /favicon.ico — 파일 없을 때 404 콘솔 노이즈 방지(1×1 PNG, 스니핑 허용). */
+const FALLBACK_FAVICON_PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+  "base64"
+);
 
 /** URL 경로(쿼리 제외) → 디스크 절대 경로. 디렉터리 탈출 시 null. */
 function resolvedStaticFile(urlPathNoQuery) {
@@ -179,6 +186,33 @@ http
         res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
         res.end(JSON.stringify(idx));
       });
+      return;
+    }
+    if (urlPath === "/favicon.ico") {
+      const favPath = path.join(rootResolved, "favicon.ico");
+      if (existsSync(favPath)) {
+        readFile(favPath, (err, data) => {
+          if (err) {
+            res.writeHead(200, {
+              "Content-Type": "image/png",
+              "Cache-Control": "public, max-age=86400",
+            });
+            res.end(FALLBACK_FAVICON_PNG);
+            return;
+          }
+          res.writeHead(200, {
+            "Content-Type": "image/x-icon",
+            "Cache-Control": "public, max-age=86400",
+          });
+          res.end(data);
+        });
+        return;
+      }
+      res.writeHead(200, {
+        "Content-Type": "image/png",
+        "Cache-Control": "public, max-age=86400",
+      });
+      res.end(FALLBACK_FAVICON_PNG);
       return;
     }
     const mTile = urlPath.match(/^\/tile\/(\d+)\/(\d+)\/(\d+)\.png$/);

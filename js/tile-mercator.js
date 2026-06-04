@@ -29,7 +29,8 @@
       return `${TILE_BASE}/tile/{z}/{x}/{y}.png?p=${p}` + (d !== "standard" ? `&disp=${d}` : "");
     };
     // crossOrigin: 외부 타일 서버 텍스처를 OL 캔버스/WebGL이 쓸 수 있게(서버는 ACAO:* 응답)
-    const encTiles = new ol.source.XYZ({ url: tileUrl(), maxZoom: 18, minZoom: 2, transition: 120, crossOrigin: "anonymous" });
+    // transition:0 — 줌 중 타일이 매번 페이드-인하면 깜빡임처럼 보이므로 페이드 끔(즉시 표시).
+    const encTiles = new ol.source.XYZ({ url: tileUrl(), maxZoom: 18, minZoom: 2, transition: 0, crossOrigin: "anonymous" });
 
     // #chart 캔버스 바로 아래에 OL 지도 삽입(상호작용·컨트롤 없음 — #chart/main.js가 처리)
     const stage = document.getElementById("stage");
@@ -37,7 +38,8 @@
     const olDiv = document.createElement("div"); olDiv.id = "olmap";
     stage.insertBefore(olDiv, chart);
     const view = new ol.View({ center: [0, 0], zoom: 2, enableRotation: false, constrainResolution: false, multiWorld: false });
-    const map = new ol.Map({ target: olDiv, layers: [new ol.layer.Tile({ source: encTiles })], controls: [], interactions: [], view });
+    // preload: 줌 시 새 레벨 타일이 로드되기 전까지 하위 줌 타일을 계속 그려 빈 프레임(깜빡임) 방지.
+    const map = new ol.Map({ target: olDiv, layers: [new ol.layer.Tile({ source: encTiles, preload: 6 })], controls: [], interactions: [], view });
     window.encMap = map;
     const onResize = () => map.updateSize();
     window.addEventListener("resize", onResize);

@@ -77,6 +77,6 @@
 - 디스크 타일 캐시(`tiles/`)는 컨테이너 재시작 시 사라짐(온디맨드 재렌더 → 다시 캐시). 영구화하려면 디스크 볼륨 연결 또는 이미지에 미리 구운 타일 COPY.
 - 배포 후 **`502`** 이고 Logs에 앱 기동 로그가 없으면: **`package.json`의 `start`가 `node serve.js`인지**, Render **Docker Command**에 **`server.js`/`18000` 같은 오타·포트 인자**가 없는지 확인한다. (`server.js`는 저장소에 **호환 진입점**으로 두어 `node server.js`도 동일하게 기동되게 할 수 있다.)
 - Dockerfile의 셀 인덱스 빌드 단계는 **`scripts/build-cell-index.mjs`** 가 맞다. **`build-sell-index`** 등 오타면 빌드/이미지가 꼬일 수 있다.
-- RAM 부족(OOM: "used over 512MB" 등)이면 `CELL_CACHE_MAX`를 더 낮추고(예: 8~12), `NODE_OPTIONS` 힙 상한을 더 낮추거나(예: 320), **Standard(2GB)** 등 RAM 큰 인스턴스로 올린다.
+- RAM 부족(OOM: "used over 512MB" 등)이면 `CELL_CACHE_MAX`를 더 낮추고(예: 8~12), `NODE_OPTIONS` 힙 상한을 더 낮추거나(예: 256), 환경 변수 **`TILE_RENDER_MAX=2`** 로 타일 렌더 동시 실행을 제한한다(기본: `RENDER=true`일 때 2). 또는 **Standard(2GB)** 등 RAM 큰 인스턴스로 올린다.
 - 헬스체크가 `connection refused`이면 프로세스가 포트에 바인드하기 전에 죽었거나(OOM 등) **Health Check Path**가 앱에 없는 경로인 경우가 있다. 이 저장소는 **`/health`** 와 **`/healthz`** 를 제공한다.
 - 보안상 출처를 제한하려면 serve.js의 `Access-Control-Allow-Origin: *`을 Vercel 도메인으로 좁혀도 된다.

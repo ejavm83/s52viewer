@@ -56,13 +56,42 @@ let _renderTile = null;
 const _tileInflight = new Map(); // "z/x/y" -> Promise<Buffer>
 const TILE_DIR = path.join(root, "tiles");
 
+// 512MB 호스트: OL이 타일을 동시에 많이 요청하면 캐시 미스 시 renderTile 병렬로 OOM·502.
+// 서로 다른 타일 렌더 개수를 제한한다(동일 z/x/y는 _tileInflight로 coalesce).
+function tileRenderSlotMax() {
+  const n = Number(process.env.TILE_RENDER_MAX);
+  if (Number.isFinite(n) && n >= 1 && n <= 16) return Math.floor(n);
+  return process.env.RENDER === "true" ? 2 : 4;
+}
+let _tileRenderBusy = 0;
+const _tileRenderWait = [];
+
+async function acquireTileRenderSlot() {
+  const max = tileRenderSlotMax();
+  for (;;) {
+    if (_tileRenderBusy < max) {
+      _tileRenderBusy++;
+      return;
+    }
+    await new Promise((resolve) => {
+      _tileRenderWait.push(resolve);
+    });
+  }
+}
+
+function releaseTileRenderSlot() {
+  _tileRenderBusy--;
+  const next = _tileRenderWait.shift();
+  if (next) next();
+}
+
 // 쿼리스트링 → S-52 설정. 기본값은 예열된 'day' 타일과 일치(palette day, 표시 standard,
 // 등고선 2/10/20, SCAMIN on)하도록 잡아, 기본 요청은 디스크 캐시를 그대로 쓴다.
 function tileSettings(q) {
   const g = (re) => { const m = q.match(re); return m ? m[1] : null; };
   const num = (re, d) => { const v = g(re); return v != null ? +v : d; };
   return {
-    palette: g(/(?:^|&)p=(day|dusk|night)/) || "day",
+    palette: g(/(?:^|&)p=(day|dusk|night)/) || g(/(?:^|&)t=(day|dusk|night)/) || "day",
     display: g(/(?:^|&)disp=(base|standard|other)/) || "standard",
     shallow: num(/(?:^|&)shallow=(\d+(?:\.\d+)?)/, 2),
     safety: num(/(?:^|&)safety=(\d+(?:\.\d+)?)/, 10),
@@ -86,10 +115,25 @@ async function getTilePng(z, x, y, settings) {
   const ck = `${key}/${z}/${x}/${y}`;
   if (_tileInflight.has(ck)) return _tileInflight.get(ck);
   const job = (async () => {
-    if (!_renderTile) ({ renderTile: _renderTile } = await import("./lib/render-tile.mjs"));
-    const png = await _renderTile(z, x, y, { tileSize: 256, ...settings });
-    try { await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, png); } catch { /* best-effort */ }
-    return png;
+    await acquireTileRenderSlot();
+    try {
+      try {
+        return await readFileP(file);
+      } catch {
+        /* 대기 중 다른 요청이 캐시를 채웠을 수 있음 */
+      }
+      if (!_renderTile) ({ renderTile: _renderTile } = await import("./lib/render-tile.mjs"));
+      const png = await _renderTile(z, x, y, { tileSize: 256, ...settings });
+      try {
+        await mkdir(path.dirname(file), { recursive: true });
+        await writeFile(file, png);
+      } catch {
+        /* best-effort */
+      }
+      return png;
+    } finally {
+      releaseTileRenderSlot();
+    }
   })();
   _tileInflight.set(ck, job);
   try { return await job; } finally { _tileInflight.delete(ck); }

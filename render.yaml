@@ -19,3 +19,5 @@ services:
         value: "12"
       - key: NODE_OPTIONS
         value: "--max-old-space-size=320"
+      - key: TILE_RENDER_MAX
+        value: "2"

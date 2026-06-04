@@ -43,7 +43,7 @@
    - **Health Check Path**: **`/health`** (또는 **`/healthz`** — `serve.js`가 둘 다 `ok`로 응답). Render에서 `/healthz`로 두어도 된다.
    - **Environment (512MB Free 권장)**:
      - `CELL_CACHE_MAX=12` — 셀 파싱이 메모리를 많이 쓰므로 낮게 두는 것이 OOM 방지에 가장 효과적이다. RAM 여유가 있으면 20~40까지 올려도 된다.
-     - `NODE_OPTIONS=--max-old-space-size=384` — Node 힙이 컨테이너 RAM을 넘기면 OOM-kill된다. `node-canvas`(Cairo) 등 네이티브가 별도로 RAM을 쓰므로 Free 티어에서는 384 전후가 안전한 편이다.
+     - `NODE_OPTIONS=--max-old-space-size=320` — Node 힙이 컨테이너 RAM을 넘기면 OOM-kill된다. `node-canvas`(Cairo) 등 네이티브가 별도로 RAM을 쓰므로 **512MB 인스턴스**에서는 320 전후가 더 안전한 편이다(여전히 OOM이면 256·`CELL_CACHE_MAX=8` 또는 RAM 업그레이드).
    - (선택) 저장소 루트의 **`render.yaml`**을 쓰면 위 env·헬스 경로를 Blueprint로 한 번에 맞출 수 있다. 대시보드에서 **New Blueprint Instance** 또는 기존 서비스와 병합 시 Render 문서를 따른다.
 5. **Create Web Service** → 빌드(몇 분, 000/ 셀 374MB 포함) 후 URL 발급: `https://<이름>.onrender.com`.
 6. 확인:

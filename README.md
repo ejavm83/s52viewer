@@ -41,6 +41,7 @@ npm run serve        # 기본 http://localhost:8000/
 
 - 마법사에서 **Docker**로 빌드되는지 확인하고, **Docker Command는 비움** · **`PORT` 환경 변수는 수동 추가하지 않음**.
 - 배포 후: `/healthz` → `ok`, `/tile/12/3516/1621.png?p=day` → PNG, 루트 `/` → 뷰어. **`enc-tile-base`는 비움**이면 동일 호스트에서 타일 사용.
+- **512MB(Starter/Free)** 에서 Events에 **OOM**이 뜨면: Environment에서 **`CELL_CACHE_MAX=8`**, **`NODE_OPTIONS=--max-old-space-size=256`** 을 시도하거나 **Scaling**에서 **RAM 2GB(Standard)** 로 올린다. (`RENDER=true`일 때 코드 기본 셀 캐시는 12.)
 - 슬립 없이 쓰려면 인스턴스를 **Starter** 등으로 올리면 됩니다.
 - 상세·분리 배포(Vercel+Render): [`DEPLOY-TILE-SERVER.md`](DEPLOY-TILE-SERVER.md)
 

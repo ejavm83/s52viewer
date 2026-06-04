@@ -18,4 +18,4 @@ services:
       - key: CELL_CACHE_MAX
         value: "12"
       - key: NODE_OPTIONS
-        value: "--max-old-space-size=384"
+        value: "--max-old-space-size=320"

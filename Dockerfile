@@ -27,7 +27,8 @@ RUN node scripts/build-cell-index.mjs || true
 
 # PORT는 호스트가 주입(Render/Fly 등). 로컬: docker run -e PORT=8080 -p 8080:8080 ...
 # 헬스체크 경로: GET /health (Render 대시보드 Health Check Path에 /health 권장)
-# 512MB 컨테이너: Node 힙 + node-canvas(Cairo) 네이티브가 같이 쓰므로 힙을 ~384MB로 제한
-ENV NODE_OPTIONS=--max-old-space-size=384
+# 512MB 컨테이너: Node 힙 + node-canvas(Cairo) 네이티브가 같이 쓰므로 힙을 ~320MB로 제한
+# 힙이 크면 node-canvas(Cairo)와 겹쳐 컨테이너 512MB를 넘기기 쉬움 — Render Free/Starter(512MB) 권장
+ENV NODE_OPTIONS=--max-old-space-size=320
 EXPOSE 10000
 CMD ["node", "serve.js"]

@@ -30,6 +30,20 @@ npm run serve        # 기본 http://localhost:8000/
 
 브라우저에서 `http://localhost:8000/`을 엽니다. **`file://`로 `index.html`만 열면** 모듈·fetch 제한으로 동작하지 않을 수 있으므로 반드시 위처럼 HTTP로 서빙하세요.
 
+## Render에 새로 배포
+
+| 방법 | 할 일 |
+|------|--------|
+| **한 번에 (Blueprint)** | Render Dashboard → **New** → **Blueprint** → 이 저장소 선택 → `render.yaml` 적용. (서비스 이름·플랜은 마법사에서 바꿀 수 있음) |
+| **수동 (Web Service)** | **New** → **Web Service** → 같은 저장소 연결 → **Runtime: Docker**, Health **`/healthz`**, Environment에 `CELL_CACHE_MAX`·`NODE_OPTIONS`는 [`render.yaml`](render.yaml)과 동일하게. |
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/ejavm83/s52viewer)
+
+- 마법사에서 **Docker**로 빌드되는지 확인하고, **Docker Command는 비움** · **`PORT` 환경 변수는 수동 추가하지 않음**.
+- 배포 후: `/healthz` → `ok`, `/tile/12/3516/1621.png?p=day` → PNG, 루트 `/` → 뷰어. **`enc-tile-base`는 비움**이면 동일 호스트에서 타일 사용.
+- 슬립 없이 쓰려면 인스턴스를 **Starter** 등으로 올리면 됩니다.
+- 상세·분리 배포(Vercel+Render): [`DEPLOY-TILE-SERVER.md`](DEPLOY-TILE-SERVER.md)
+
 ## npm 스크립트
 
 | 스크립트 | 설명 |

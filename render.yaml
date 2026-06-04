@@ -1,14 +1,19 @@
-# Render Blueprint: https://render.com/docs/blueprint-spec
-# 저장소 연결 후 "Apply Blueprint" 또는 수동 Web Service 생성 시 참고용.
+# Render Blueprint — 저장소 연결 후 Blueprint로 적용하거나, 수동 Web Service 생성 시 참고.
+# https://render.com/docs/blueprint-spec
+#
+# 적용: Dashboard → New → Blueprint → 이 GitHub 저장소 선택 → render.yaml 인식
+# (또는 README의 "Deploy to Render" 버튼 후 서비스 타입에서 Docker 확인)
+#
 services:
   - type: web
-    name: s52-tile-server
+    name: s52viewer
     runtime: docker
     plan: free
     region: oregon
+    branch: main
     dockerfilePath: ./Dockerfile
     dockerContext: .
-    healthCheckPath: /health
+    healthCheckPath: /healthz
     envVars:
       - key: CELL_CACHE_MAX
         value: "12"

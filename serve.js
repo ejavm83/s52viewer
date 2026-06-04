@@ -105,6 +105,12 @@ http
       res.end("bad request");
       return;
     }
+    // Render 등 PaaS 헬스체크(가벼운 응답 — 타일 엔진·디스크 I/O 없음)
+    if (urlPath === "/health" || urlPath === "/healthz") {
+      res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" });
+      res.end("ok");
+      return;
+    }
     if (urlPath === "/api/cells") {
       const files = listEncCellNames();
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -172,11 +178,19 @@ http
         console.error(`[serve] missing ${v} — OpenLayers will not load; commit vendor/ and redeploy.`);
       }
     }
-    // 타일 렌더 엔진을 백그라운드로 예열 — 첫 타일 요청의 일회성 init 지연을 숨긴다.
-    // 정적 서빙만 쓰는 경우에도 실패는 무시(node-canvas 미설치 환경 등).
-    import("./lib/render-tile.mjs").then((m) => m.warmup()).then(
-      () => console.log("tile render engine ready (/tile/{z}/{x}/{y}.png)")
-    ).catch((e) => console.log("tile engine warmup skipped:", e && e.message || e));
+    // 타일 렌더 엔진 예열 — 첫 타일 요청 지연을 줄인다. Render Free(512MB) 등에서는
+    // 기동 직후 peak RAM으로 OOM 나기 쉬워 RENDER=true이면 기본 스킵(FORCE_TILE_WARMUP=1이면 예열).
+    const skipWarmup =
+      process.env.RENDER === "true" && process.env.FORCE_TILE_WARMUP !== "1";
+    if (skipWarmup) {
+      console.log(
+        "tile engine startup warmup skipped (RENDER; set FORCE_TILE_WARMUP=1 to enable)"
+      );
+    } else {
+      import("./lib/render-tile.mjs").then((m) => m.warmup()).then(
+        () => console.log("tile render engine ready (/tile/{z}/{x}/{y}.png)")
+      ).catch((e) => console.log("tile engine warmup skipped:", e && e.message || e));
+    }
     console.log(`S-52 viewer (this machine): http://localhost:${port}/`);
     const nets = os.networkInterfaces();
     const addrs = [];

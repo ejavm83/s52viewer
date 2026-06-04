@@ -1,0 +1,16 @@
+# Render Blueprint: https://render.com/docs/blueprint-spec
+# 저장소 연결 후 "Apply Blueprint" 또는 수동 Web Service 생성 시 참고용.
+services:
+  - type: web
+    name: s52-tile-server
+    runtime: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    envVars:
+      - key: CELL_CACHE_MAX
+        value: "12"
+      - key: NODE_OPTIONS
+        value: "--max-old-space-size=384"

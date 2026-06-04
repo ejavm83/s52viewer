@@ -61,7 +61,7 @@ const TILE_DIR = path.join(root, "tiles");
 function tileRenderSlotMax() {
   const n = Number(process.env.TILE_RENDER_MAX);
   if (Number.isFinite(n) && n >= 1 && n <= 16) return Math.floor(n);
-  return process.env.RENDER === "true" ? 2 : 4;
+  return process.env.RENDER === "true" ? 1 : 4;
 }
 let _tileRenderBusy = 0;
 const _tileRenderWait = [];

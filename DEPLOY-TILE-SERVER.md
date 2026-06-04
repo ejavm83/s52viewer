@@ -41,9 +41,10 @@
    - **Instance Type**: Free(512MB, 15분 유휴 시 슬립 → 첫 요청 ~30~60s 콜드스타트) 또는 Starter($7/mo, 항상 켜짐).
    - **Runtime**: 반드시 **Docker** (`Dockerfile` 감지). **Node**로 만들면 Dockerfile·Noto CJK가 적용되지 않아 한글이 □로 나오고, 힙/캐시 기본도 컨테이너와 다를 수 있다.
    - **Health Check Path**: **`/health`** (또는 **`/healthz`** — `serve.js`가 둘 다 `ok`로 응답). Render에서 `/healthz`로 두어도 된다.
-   - **Environment (512MB Free 권장)**:
-     - `CELL_CACHE_MAX=12` — 셀 파싱이 메모리를 많이 쓰므로 낮게 두는 것이 OOM 방지에 가장 효과적이다. RAM 여유가 있으면 20~40까지 올려도 된다.
-     - `NODE_OPTIONS=--max-old-space-size=320` — Node 힙이 컨테이너 RAM을 넘기면 OOM-kill된다. `node-canvas`(Cairo) 등 네이티브가 별도로 RAM을 쓰므로 **512MB 인스턴스**에서는 320 전후가 더 안전한 편이다(여전히 OOM이면 256·`CELL_CACHE_MAX=8` 또는 RAM 업그레이드).
+   - **Environment (512MB Free/Starter 권장)**:
+     - `CELL_CACHE_MAX=8` — 셀 파싱이 메모리를 많이 쓴다. RAM 여유가 있으면 12~20까지 올려도 된다.
+     - `NODE_OPTIONS=--max-old-space-size=224` — JS 힙이 크면 **heap out of memory**(mark-compact)와 컨테이너 OOM이 모두 나기 쉽다. 네이티브(Cairo) 여유를 위해 512MB에서는 224 전후 권장(여전히 크면 192·`TILE_RENDER_MAX=1`).
+     - `TILE_RENDER_MAX=1` — 타일 렌더를 **직렬**에 가깝게 제한해 피크 RAM을 줄인다(기본: `RENDER=true`일 때 1).
    - (선택) 저장소 루트의 **`render.yaml`**을 쓰면 위 env·헬스 경로를 Blueprint로 한 번에 맞출 수 있다. 대시보드에서 **New Blueprint Instance** 또는 기존 서비스와 병합 시 Render 문서를 따른다.
 5. **Create Web Service** → 빌드(몇 분, 000/ 셀 374MB 포함) 후 URL 발급: `https://<이름>.onrender.com`.
 6. 확인:
@@ -77,6 +78,6 @@
 - 디스크 타일 캐시(`tiles/`)는 컨테이너 재시작 시 사라짐(온디맨드 재렌더 → 다시 캐시). 영구화하려면 디스크 볼륨 연결 또는 이미지에 미리 구운 타일 COPY.
 - 배포 후 **`502`** 이고 Logs에 앱 기동 로그가 없으면: **`package.json`의 `start`가 `node serve.js`인지**, Render **Docker Command**에 **`server.js`/`18000` 같은 오타·포트 인자**가 없는지 확인한다. (`server.js`는 저장소에 **호환 진입점**으로 두어 `node server.js`도 동일하게 기동되게 할 수 있다.)
 - Dockerfile의 셀 인덱스 빌드 단계는 **`scripts/build-cell-index.mjs`** 가 맞다. **`build-sell-index`** 등 오타면 빌드/이미지가 꼬일 수 있다.
-- RAM 부족(OOM: "used over 512MB" 등)이면 `CELL_CACHE_MAX`를 더 낮추고(예: 8~12), `NODE_OPTIONS` 힙 상한을 더 낮추거나(예: 256), 환경 변수 **`TILE_RENDER_MAX=2`** 로 타일 렌더 동시 실행을 제한한다(기본: `RENDER=true`일 때 2). 또는 **Standard(2GB)** 등 RAM 큰 인스턴스로 올린다.
+- RAM 부족(OOM·**JavaScript heap out of memory**)이면 `CELL_CACHE_MAX`를 더 낮추고(예: 6~8), `NODE_OPTIONS` 힙을 더 낮추거나(예: 192~224), **`TILE_RENDER_MAX=1`** 로 타일을 직렬 렌더한다(기본: `RENDER=true`일 때 1). 또는 **Standard(2GB)** 등 RAM 큰 인스턴스로 올린다.
 - 헬스체크가 `connection refused`이면 프로세스가 포트에 바인드하기 전에 죽었거나(OOM 등) **Health Check Path**가 앱에 없는 경로인 경우가 있다. 이 저장소는 **`/health`** 와 **`/healthz`** 를 제공한다.
 - 보안상 출처를 제한하려면 serve.js의 `Access-Control-Allow-Origin: *`을 Vercel 도메인으로 좁혀도 된다.

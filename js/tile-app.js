@@ -75,7 +75,6 @@
   // ── 서버 타일 방식에 적용 안 되는 컨트롤 정리 ──
   const hide = (id) => { const e = document.getElementById(id); if (e) e.style.display = "none"; };
   hide("open-enc");                                   // 서버에 셀이 이미 있음
-  const bm = document.getElementById("basemap")?.closest("label"); if (bm) bm.style.display = "none"; // 위성 배경(불투명 타일이라 N/A)
   hide("tabObjs"); hide("showVisible"); hide("hideAll"); // 오브젝트탭·표시/숨김(벡터 전용)
 
   // ── 셀 목록(사이드바): /cell-index.json, 검색, 클릭 fly-to, 화면 겹침 강조 ──

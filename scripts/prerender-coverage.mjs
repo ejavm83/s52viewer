@@ -15,6 +15,10 @@ const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const TILE_DIR = path.join(root, "tiles");
 const args = process.argv.slice(2);
 const dry = args.includes("--dry");
+const force = args.includes("--force"); // 기존 타일을 건너뛰지 않고 덮어쓴다(스타일 변경 후 재예열용)
+const dispI = args.indexOf("--disp");   // 표시범주(기본 standard). other/base는 serve.js와 동일하게 별도 폴더로 예열.
+const disp = dispI >= 0 ? args[dispI + 1] : "standard";
+const subdir = disp && disp !== "standard" ? `day__${disp}` : "day"; // = serve.js settingsKey(기본 팔레트·등고선·scamin)
 const nums = args.filter((a) => /^\d+$/.test(a)).map(Number);
 const [zMin, zMax] = nums.length >= 2 ? nums : [6, 13];
 // optional lon band filter (for parallel sharding): --lon <min> <max> keeps only
@@ -64,9 +68,9 @@ let rendered = 0, cached = 0, t0 = performance.now();
 for (const z of zooms) {
   for (const xy of perZoom.get(z)) {
     const [x, y] = xy.split("/").map(Number);
-    const file = path.join(TILE_DIR, "day", String(z), String(x), `${y}.png`);
-    try { await access(file); cached++; continue; } catch {}
-    const png = await renderTile(z, x, y, { tileSize: 256 });
+    const file = path.join(TILE_DIR, subdir, String(z), String(x), `${y}.png`);
+    if (!force) { try { await access(file); cached++; continue; } catch {} }
+    const png = await renderTile(z, x, y, { tileSize: 256, display: disp });
     await mkdir(path.dirname(file), { recursive: true });
     await writeFile(file, png);
     rendered++;

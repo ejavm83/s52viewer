@@ -101,8 +101,8 @@ function tileSettings(q) {
     palette: g(/(?:^|&)p=(day|dusk|night)/) || g(/(?:^|&)t=(day|dusk|night)/) || "day",
     display: g(/(?:^|&)disp=(base|standard|other)/) || "standard",
     shallow: num(/(?:^|&)shallow=(\d+(?:\.\d+)?)/, 2),
-    safety: num(/(?:^|&)safety=(\d+(?:\.\d+)?)/, 10),
-    deep: num(/(?:^|&)deep=(\d+(?:\.\d+)?)/, 20),
+    safety: num(/(?:^|&)safety=(\d+(?:\.\d+)?)/, 30),
+    deep: num(/(?:^|&)deep=(\d+(?:\.\d+)?)/, 50),
     scamin: !/(?:^|&)scamin=0/.test(q),
   };
 }
@@ -110,7 +110,7 @@ function settingsKey(s) {
   let k = s.palette;
   const x = [];
   if (s.display !== "standard") x.push(s.display);
-  if (!(s.shallow === 2 && s.safety === 10 && s.deep === 20)) x.push(`c${s.shallow}-${s.safety}-${s.deep}`);
+  if (!(s.shallow === 2 && s.safety === 30 && s.deep === 50)) x.push(`c${s.shallow}-${s.safety}-${s.deep}`);
   if (!s.scamin) x.push("nsc");
   return x.length ? `${k}__${x.join("_")}` : k;
 }

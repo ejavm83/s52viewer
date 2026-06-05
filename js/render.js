@@ -139,6 +139,33 @@ function hazardSymbolDeclutterMinPx(denom) {
   return 18;
 }
 
+/**
+ * 항행보조(부이·등화·비컨) 점심볼을 소축척(축소)에서 더 듬성하게 솎는 거리(px).
+ * 개략 셀(예: 1:200만 overview)이 촘촘히 담은 항로표지가 광역 뷰를 뒤덮는 것을 막는다.
+ * 표시 분모가 작을수록(확대) 기존 NAVAID_DEDUP_PX(24)로 수렴해 상세를 그대로 유지한다.
+ */
+function navaidDedupPx(denom) {
+  if (!Number.isFinite(denom) || denom < 150000) return NAVAID_DEDUP_PX; // ~1:15만↑(확대): 그대로
+  if (denom >= 4000000) return 60;   // ~z6 이하
+  if (denom >= 2000000) return 52;   // ~z7
+  if (denom >= 1000000) return 44;   // ~z8
+  if (denom >= 450000) return 36;    // ~z9–10
+  return 30;                          // ~z11
+}
+
+/**
+ * 수심 숫자(SOUNDG)를 소축척에서 듬성하게 솎는 최소 간격(px). 0이면 솎기 없음(상세 줌).
+ * 라벨 박스(_place)와 **별개**의 공간 격자를 써서 지명 라벨엔 영향을 주지 않는다.
+ */
+function soundingDedupPx(denom) {
+  if (!Number.isFinite(denom) || denom < 150000) return 0;
+  if (denom >= 4000000) return 46;
+  if (denom >= 2000000) return 40;
+  if (denom >= 1000000) return 34;
+  if (denom >= 450000) return 28;
+  return 22;
+}
+
 function isHazardDeclutterSym(sym) {
   if (!sym || typeof sym !== "string") return false;
   const u = sym.toUpperCase();
@@ -290,8 +317,13 @@ class Viewport {
       const g = this.globeZoomOutMinScale();
       lo = lo == null ? g : Math.max(lo, g);
     }
-    if (lo == null || !Number.isFinite(s)) return s;
-    return Math.max(s, lo);
+    if (!Number.isFinite(s)) return s;
+    if (lo != null) s = Math.max(s, lo);
+    // 타일 모드 상한: OL 타일은 z18까지만 있어, vp가 그보다 더 확대되면 표시는 z18에 멈추고
+    // vp만 깊어져 둘이 어긋난다 → 드래그해도 화면이 드래그량의 일부만 이동(="최대 확대 후 이동 안 됨").
+    // tile-mercator가 z18에 해당하는 scale을 tileMaxScale로 세팅하면 그 위 확대를 막아 동기화한다.
+    if (this.tileMaxScale > 0 && s > this.tileMaxScale) s = this.tileMaxScale;
+    return s;
   }
   fit(bounds) {
     const w = this.canvas.width, h = this.canvas.height;
@@ -353,8 +385,11 @@ class Viewport {
   syncAutoMode() {
     if (this.auto3D) {
       const t = this.globeThresholdScale();
-      if (this.scale < t && this.mode !== "globe") this.enterGlobe();
-      else if (this.scale >= t && this.mode === "globe") this.exitGlobe();
+      // 히스테리시스: 임계 하나로 양방향 전환하면 scale이 임계 근처에서 미세히 떨릴 때(또는 fit 한한이
+      // 임계 아래라 매 프레임 syncAutoMode가 재평가될 때) globe↔mercator가 뒤집혀 전환 크로스페이드가
+      // 반복 → 화면이 깜빡인다. 진입은 0.85t 아래, 이탈은 1.15t 위에서만 → 그 사이 밴드에선 현재 모드 유지.
+      if (this.scale < t * 0.85 && this.mode !== "globe") this.enterGlobe();
+      else if (this.scale > t * 1.15 && this.mode === "globe") this.exitGlobe();
     }
     if (this.mode === "globe") {
       const sm = this.globeZoomOutMinScale();
@@ -625,22 +660,8 @@ class Renderer {
     this.depthUnit = "m"; // m | ft | fathom — sounding display unit
     /** 버드뷰 기울기(도). 0 = 평면 정면. >0이면 캔버스를 CSS 3D 원근으로 기울여 오블리크 시점. */
     this._tiltDeg = 0;
-    /** 위성 영상 오버레이(육지에만). XYZ 타일을 머케이터 좌표에 맞춰 LNDARE로 클리핑해 그림. */
-    this.showSatellite = false;
     /** true면 ENC 겹침·줌과 무관하게 세계 육지(Natural Earth)를 항상 그림(UI 토글 없음, 기본 false). */
     this.forceWorldLand = false;
-    this._tileCache = new Map();    // "z/x/y" -> HTMLImageElement (로드 완료, 메모리 LRU)
-    this._tileLoading = new Set();  // "z/x/y" 로딩 중
-    this._tileMemMax = 1500;        // 메모리 캐시 상한(패닝 중 잦은 재요청 방지)
-    /** 위성 타일 1장 로드 완료 시 호출(앱에서 재렌더링 연결). */
-    this.onSatelliteTileReady = null;
-    /**
-     * Cache API(디스크) 핸들 Promise — 타일을 세션 간 영구 저장.
-     * 지원 안 되는 환경(file:// 등)에선 null로 두고 HTTP 캐시에 의존.
-     */
-    this._tileDiskCache = (typeof caches !== "undefined")
-      ? caches.open("enc-sat-tiles-v1").catch(() => null)
-      : Promise.resolve(null);
     this.hiddenClasses = new Set(); // object-class acronyms hidden by the user
     this._labelBoxes = [];
     this.cells = new Map();
@@ -954,8 +975,12 @@ class Renderer {
     this._pointSymbolGrid = new Map();
     this._hazardSymbolGrid = new Map();
     this._textDedupGrid = new Map();
+    this._soundingGrid = new Map();
     const denom = vp.scaleDenominator();
     this._symbolDeclutterDenom = denom;
+    // 소축척(축소)일수록 항행보조·수심 점표시를 더 듬성하게 솎는 간격(px). 상세 줌에선 기존값/0.
+    this._navaidDedupPx = navaidDedupPx(denom);
+    this._soundingDedupPx = this.declutter ? soundingDedupPx(denom) : 0;
     // 동적 라벨/사운딩 글자 크기: 축척이 커질수록(=축소될수록) 글자를 줄여
     // 화면이 라벨로 덮이는 것을 막고, 확대할수록 글자를 키워 가독성을 높인다.
     // denom 1:5k≈14px, 1:75k≈13px, 1:500k≈11px, 1:5M≈10px
@@ -1073,32 +1098,18 @@ class Renderer {
     this._bestCsclAt = this._buildCsclLookup(denom, winMinX, winMaxX, winMinY, winMaxY);
 
     // pass 1: area fills
-    // 위성 오버레이용으로, **실제로 그려진** LNDARE(육지면) 링을 함께 수집한다.
-    // 위성 클립을 이 집합과 100% 동일하게 써서 "육지가 칠해진 곳 = 위성이 덮이는 곳"을 보장
-    // → 축척 밴드 경계에서 한쪽만 그려지는 어긋남(탄색 사각형만 남는 현상)을 제거.
-    // 위성(showSatellite)이 켜지면 육지 타일을 그린다.
-    const tileOverlayOn = this.showSatellite;
-    const satLandRings = tileOverlayOn ? [] : null;
-    // 위성이 ENC 바다(항만·만)를 덮는 것을 막기 위해, LNDARE가 아닌 AC 면(=바다/수심)을
-    // 모아 위성 위에 다시 그린다. 세계 육지(Natural Earth)는 해상도가 낮아 항만을 육지로
-    // 분류하므로, ENC가 "바다"라고 한 면을 복구해 청록색 격자 오염을 제거.
-    const satSeaFills = tileOverlayOn ? [] : null;
-    /** CSCL 미부여 셀은 정렬 시 가장 거친 것으로 취급(상세 셀 LNDARE가 위에 오도록). */
-    const csclSortKey = (r) => (r.cellCscl === Infinity ? 1e18 : r.cellCscl);
-    const drawAreaOps = (r, isLand) => {
+    const drawAreaOps = (r) => {
       const pg = r.feat._pg;
       if (!pg || pg.type !== "Area") return;
       for (const op of r.ops) {
         if (op.op === "AC") {
           this._fillArea(pg.rings, op.color, 1);
-          if (satSeaFills && !isLand) satSeaFills.push({ rings: pg.rings, color: op.color });
         } else if (op.op === "AP") this._fillArea(pg.rings, op.color, 0.12);
         else if (op.op === "AP_ACHARE") this._fillAchareHatch(pg.rings);
       }
-      if (satLandRings && isLand && pg.rings) {
-        for (const ring of pg.rings) if (ring.length >= 6) satLandRings.push(ring);
-      }
     };
+    /** CSCL 미부여 셀은 정렬 시 가장 거친 것으로 취급(상세 셀 LNDARE가 위에 오도록). */
+    const csclSortKey = (r) => (r.cellCscl === Infinity ? 1e18 : r.cellCscl);
     // pass 1: 면 채움 — 육지(LNDARE)와 바다(DEPARE 등)를 **한 목록에서 CSCL 거친→상세 순**으로
     // 통합해 칠한다. 이렇게 해야 상세 셀의 면(육지든 바다든)이 개략 셀의 단순화된 면 위에 얹혀,
     // 개략 셀 육지가 상세 셀 바다를 직선으로 덮던 "뭉툭한 해안선"이 사라진다.
@@ -1117,17 +1128,7 @@ class Renderer {
     // 얹혀 일관된다. (이전엔 "상세에 완전히 덮인 개략 바다 면 생략" 최적화를 넣었으나, 그 판정이
     // 폴리곤 단위라 셀 경계에서 수심 면이 보이다 말다 하는 격자 불일치를 만들어 제거함.)
     for (const r of areaRows) {
-      drawAreaOps(r, String(r.feat.acronym || "").toUpperCase() === "LNDARE");
-    }
-    // pass 1.5: 위성 영상.
-    //  - 상세 줌(Natural Earth 끔: scale>30000 또는 표시분모<MERCATOR_WORLD_OVERLAY_MIN_DENOM):
-    //    "바다(DEPARE 등)가 아닌 영역"으로만 클립. 상세 셀의 DEPARE 경계가 해안과 맞춰 위성이 따라감.
-    //    (거친 소축척 LNDARE 폴리곤이 위성 클립에 끼어 직선으로 잘리던 문제 해소)
-    //  - 광역 줌: 육지(ENC LNDARE ∪ 세계 육지)로 클립(바다는 ENC가 거의 안 덮으므로).
-    // 두 경우 모두 마지막에 ENC 바다 면을 위성 위에 다시 그려 항만·만을 복구.
-    if (tileOverlayOn) {
-      this._drawSatelliteLand(satLandRings, satSeaFills, [winMinX, winMaxX, winMinY, winMaxY]);
-      for (const f of satSeaFills) this._fillArea(f.rings, f.color, 1);
+      drawAreaOps(r);
     }
     // pass 2: lines — batched by style so thousands of features stroke in a
     // handful of draw calls instead of one beginPath/stroke each.
@@ -2289,156 +2290,6 @@ class Renderer {
     if (alpha !== 1) ctx.globalAlpha = 1;
   }
 
-  /**
-   * 위성 영상을 **모든 육지**에 클리핑해 그린다. 바다·해도 영역은 칠하지 않는다.
-   * 클립 경로 = ENC LNDARE ∪ (광역 줌일 때만) 세계 육지(Natural Earth). 상세 축척에서는 ENC만.
-   * 타일은 우리 투영(웹 머케이터)과 동일 좌표계라 별도 워핑 없이 사각형 blit로 정합된다.
-   *
-   * @param {Float64Array[]} encLandRings - ENC LNDARE 링(머케이터 평면 좌표, flat x,y…)
-   * @param {{rings:Float64Array[]}[]} seaFills - ENC 바다(DEPARE 등) 면. 클립에서 빼서 위성이
-   *        바다를 침범하지 않게 한다(거친 소축척 육지 폴리곤이 만든 직선 잘림 방지).
-   * @param {number[]} win - [winMinX, winMaxX, winMinY, winMaxY] 머케이터 뷰 창
-   */
-  _drawSatelliteLand(encLandRings, seaFills, win) {
-    const ctx = this.ctx, vp = this.vp;
-    const [winMinX, winMaxX, winMinY, winMaxY] = win;
-
-    // 타일(위성/지도) 클립 영역 = ENC 육지(LNDARE) ∪ 세계 육지(Natural Earth).
-    // 세계 육지는 **상세 줌(scale>30000)이 아니면 항상** 포함한다. (ENC 겹침 여부로 막던
-    // `_shouldDrawNaturalEarthWorldLand`를 쓰면, 전국 셀이 모두 표시된 광역 뷰에서 세계 육지
-    // 클립이 비활성→타일 클립 경로가 비어 위성·지도가 아예 안 그려지던 버그가 있었음.)
-    // 상세 줌에서는 ENC LNDARE가 충분히 촘촘해 세계 육지 없이도 클립이 채워진다.
-    const hasEnc = encLandRings && encLandRings.length;
-    const useWorld = vp.scale <= 30000;
-    let worldPolys = null;
-    if (useWorld) {
-      this._ensureWorldLand();
-      this._prepWorldLandMerc();
-      worldPolys = this._worldLandMerc; // [{rings:[Float64Array], bbox}]
-    }
-
-    const hasWorld = worldPolys && worldPolys.length;
-    if (!hasEnc && !hasWorld) return;
-
-    // 타일 줌 레벨·범위
-    const TWO_PI = 2 * Math.PI, TILE = 256;
-    let z = Math.round(Math.log2((TWO_PI * vp.scale) / TILE));
-    z = Math.max(2, Math.min(19, z));
-    const n = 2 ** z;
-    const tileMercW = TWO_PI / n;
-    const xToTile = (mx) => Math.floor(((mx + Math.PI) / TWO_PI) * n);
-    const yToTile = (my) => Math.floor((0.5 - my / TWO_PI) * n);
-    let tx0 = xToTile(winMinX), tx1 = xToTile(winMaxX);
-    let ty0 = yToTile(winMaxY), ty1 = yToTile(winMinY);
-    if (tx0 > tx1) { const t = tx0; tx0 = tx1; tx1 = t; }
-    if (ty0 > ty1) { const t = ty0; ty0 = ty1; ty1 = t; }
-    if ((tx1 - tx0 + 1) * (ty1 - ty0 + 1) > 400) return;
-
-    // 클립 경로: ENC 육지 ∪ 세계 육지(화면 교차분). 위성은 이 안에만 그려지고,
-    // 바다 침범분은 호출부에서 ENC 바다 면을 위성 위에 다시 그려 제거한다.
-    ctx.save();
-    ctx.beginPath();
-    if (hasEnc) for (const ring of encLandRings) this._path(ring);
-    if (hasWorld) {
-      for (const item of worldPolys) {
-        const bb = item.bbox;
-        if (bb[1] < winMinX || bb[0] > winMaxX || bb[3] < winMinY || bb[2] > winMaxY) continue;
-        for (const flat of item.rings) {
-          const m = flat.length;
-          if (m < 6) continue;
-          ctx.moveTo(vp.sx(flat[0]), vp.sy(flat[1]));
-          for (let i = 2; i < m; i += 2) ctx.lineTo(vp.sx(flat[i]), vp.sy(flat[i + 1]));
-          ctx.closePath();
-        }
-      }
-    }
-    // 바다 빼기(evenodd)는 "육지 클립이 한 출처(ENC 또는 세계)뿐"일 때만 안전하다.
-    // nonzero 합집합 클립 — 육지(ENC ∪ 세계)가 다중 축척으로 겹쳐도 안전하게 모두 내부.
-    // (evenodd는 서로 다른 셀의 거친 폴리곤이 겹칠 때 그 부분을 구멍으로 만들어 위성이
-    //  빠지는 문제가 있어 쓰지 않는다. 바다 침범분은 호출부의 ENC 바다 면 재그리기가 제거.)
-    ctx.clip("nonzero");
-    for (let tx = tx0; tx <= tx1; tx++) {
-      const wrapX = ((tx % n) + n) % n;
-      for (let ty = ty0; ty <= ty1; ty++) {
-        if (ty < 0 || ty >= n) continue;
-        const img = this._getTile(z, wrapX, ty);
-        if (!img) continue;
-        const leftMx = -Math.PI + tx * tileMercW;
-        const topMy = (0.5 - ty / n) * TWO_PI;
-        const sx = vp.sx(leftMx), sy = vp.sy(topMy);
-        const sw = tileMercW * vp.scale;
-        ctx.drawImage(img, sx, sy, sw + 1, sw + 1);
-      }
-    }
-    ctx.restore();
-  }
-
-  /**
-   * 타일 조회. 메모리 캐시에 있으면 즉시 반환, 없으면 비동기 로드 시작 후 null 반환
-   * (도착 시 onSatelliteTileReady). 2단계 캐시:
-   *   1) 메모리(_tileCache) — 같은 세션 내 즉시
-   *   2) Cache API 디스크(_tileDiskCache) — 새로고침·재방문에도 네트워크 없이 로드
-   * 디스크에도 없으면 네트워크 fetch → 디스크에 저장.
-   */
-  _getTile(z, x, y) {
-    // Esri World Imagery — 무료 타일·웹 머케이터·키 불필요.
-    const key = `imagery/${z}/${x}/${y}`;
-    const cached = this._tileCache.get(key);
-    if (cached) {
-      // LRU 갱신: 최근 사용을 맨 뒤로
-      this._tileCache.delete(key);
-      this._tileCache.set(key, cached);
-      return cached;
-    }
-    if (this._tileLoading.has(key)) return null;
-    this._tileLoading.add(key);
-    // 타일 순서: /z/y/x
-    const url = `https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`;
-    this._loadTileAsync(key, url);
-    return null;
-  }
-
-  /** 디스크 캐시 → 네트워크 순으로 타일 blob을 가져와 메모리 캐시에 Image로 적재. */
-  async _loadTileAsync(key, url) {
-    try {
-      const cache = await this._tileDiskCache;
-      let blob = null;
-      if (cache) {
-        const hit = await cache.match(url);
-        if (hit) blob = await hit.blob();
-      }
-      if (!blob) {
-        const res = await fetch(url, { mode: "cors", cache: "force-cache" });
-        if (!res.ok) throw new Error(`tile ${res.status}`);
-        // 디스크 캐시에 저장(복제본). 실패해도 표시에는 지장 없음.
-        if (cache) { try { await cache.put(url, res.clone()); } catch (_e) { /* quota 등 */ } }
-        blob = await res.blob();
-      }
-      const img = await this._blobToImage(blob);
-      this._tileCache.set(key, img);
-      this._tileLoading.delete(key);
-      // 메모리 LRU 상한 — 가장 오래전 사용분부터 제거
-      while (this._tileCache.size > this._tileMemMax) {
-        const first = this._tileCache.keys().next().value;
-        this._tileCache.delete(first);
-      }
-      if (typeof this.onSatelliteTileReady === "function") this.onSatelliteTileReady();
-    } catch (_e) {
-      this._tileLoading.delete(key);
-    }
-  }
-
-  /** Blob → 디코드 완료된 HTMLImageElement. */
-  _blobToImage(blob) {
-    return new Promise((resolve, reject) => {
-      const url = URL.createObjectURL(blob);
-      const img = new Image();
-      img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
-      img.onerror = (e) => { URL.revokeObjectURL(url); reject(e); };
-      img.src = url;
-    });
-  }
-
   /** ACHARE 면 내부: S-52 PL의 × 패턴을 화면 픽셀 격자로 근사(클립 후 선분만). */
   _fillAchareHatch(rings) {
     if (!rings || !rings.length) return;
@@ -2597,7 +2448,7 @@ class Renderer {
       // (1) 항행보조 시설: 다중 축척 셀이 같은 부이/등화를 중복 수록할 때 잔상 제거
       const navGroup = navaidGroupKey(feat);
       if (navGroup &&
-          spatialDedup(this._pointSymbolGrid, navGroup, sx, sy, NAVAID_DEDUP_PX, NAVAID_DEDUP_PX)) {
+          spatialDedup(this._pointSymbolGrid, navGroup, sx, sy, this._navaidDedupPx, this._navaidDedupPx)) {
         return;
       }
       // (2) TSS·항로·조류 등 방향 화살표: 줄지어 박힌 화살표를 듬성하게
@@ -2643,17 +2494,35 @@ class Renderer {
     if (!ps) return;
     const ctx = this.ctx;
     const fpx = this._soundingFontPx || 10;
-    const charW = fpx * 0.6;
+    const decPx = Math.max(7, fpx * 0.72);  // 데시미터(소수 한 자리) 아래첨자 크기
+    const decDrop = fpx * 0.22;             // 아래첨자 내림량
     ctx.fillStyle = this.s52.color("SNDG2");
-    ctx.font = `${fpx}px sans-serif`;
-    ctx.textAlign = "center";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "alphabetic";
+    const W = this.canvas.width, H = this.canvas.height;
+    const sgMin = this._soundingDedupPx || 0; // 소축척 솎기 최소간격(px), 0=비활성(상세 줌)
     for (let i = 0; i < ps.length; i += 3) { // flat [x,y,depth,…]
       const x = this._sx(ps[i]), y = this._sy(ps[i + 1]);
-      if (x < -20 || y < -20 || x > this.canvas.width + 20 || y > this.canvas.height + 20) continue;
-      const label = soundingLabel(ps[i + 2], this.depthUnit); // metres
-      const w = label.length * charW;
-      if (!this._place(x - w / 2, y - fpx / 2, w, fpx + 1)) continue;
-      ctx.fillText(label, x, y + fpx * 0.3);
+      if (x < -20 || y < -20 || x > W + 20 || y > H + 20) continue;
+      // 소축척: 라벨 박스와 별개의 공간 격자로 수심을 듬성하게 솎는다(데이터는 유지).
+      if (sgMin > 0 && spatialDedup(this._soundingGrid, "", x, y, sgMin, sgMin)) continue;
+      const s = soundingParts(ps[i + 2], this.depthUnit); // metres
+      ctx.font = `${fpx}px sans-serif`;
+      const wWhole = ctx.measureText(s.whole).width;
+      let wDec = 0;
+      if (s.dec != null) { ctx.font = `${decPx}px sans-serif`; wDec = ctx.measureText(s.dec).width; }
+      const totalW = wWhole + wDec;
+      if (!this._place(x - totalW / 2, y - fpx / 2, totalW, fpx + 3)) continue;
+      const sx = x - totalW / 2, by = y + fpx * 0.3;
+      ctx.font = `${fpx}px sans-serif`;
+      ctx.fillText(s.whole, sx, by);                          // 정수부(미터): 정상 크기
+      if (s.dec != null) {
+        ctx.font = `${decPx}px sans-serif`;
+        ctx.fillText(s.dec, sx + wWhole, by + decDrop);       // 데시미터: 작게+내려서(아래첨자)
+      }
+      if (s.drying) {                                          // 건출높이: 숫자 아래 밑줄(음수 부호 대신)
+        ctx.fillRect(sx, by + Math.max(1.5, fpx * 0.12), totalW, Math.max(1, fpx * 0.09));
+      }
     }
   }
 
@@ -2673,15 +2542,20 @@ class Renderer {
   }
 }
 
-// Format a sounding (stored in metres) for display in the chosen unit, using
-// S-52-style precision (a decimal for shoal depths, whole numbers when deeper).
-function soundingLabel(metres, unit) {
-  let v = metres;
-  if (unit === "ft") v = metres * 3.280839895;
-  else if (unit === "fathom") v = metres * 0.5468066492;
-  if (unit === "ft") return Math.round(v).toString();         // feet: whole
-  if (unit === "fathom") return v < 11 ? v.toFixed(1) : Math.round(v).toString();
-  return v < 31 ? v.toFixed(1) : Math.round(v).toString();    // metres
+// S-52 SOUNDG 표기 분해: 미터(정수부)와 데시미터(첫 소수, 아래첨자로 그림)로 나눈다.
+// 31m 미만만 데시미터 표기(이상은 정수). 음수=차트 데이텀 위(간조 시 노출)=「건출높이」이므로
+// 음수 부호를 쓰지 않고 양수 절대값 + 밑줄(drying)로 표시한다(S-52 표준).
+function soundingParts(metres, unit) {
+  const drying = metres < 0;
+  let v = Math.abs(metres);
+  if (unit === "ft") v *= 3.280839895;
+  else if (unit === "fathom") v *= 0.5468066492;
+  const showDec = unit === "ft" ? false : unit === "fathom" ? v < 11 : v < 31;
+  if (showDec) {
+    const d = Math.round(v * 10); // 데시미터 단위로 반올림
+    return { whole: Math.floor(d / 10).toString(), dec: (d % 10).toString(), drying };
+  }
+  return { whole: Math.round(v).toString(), dec: null, drying };
 }
 
 function bandOf(name) {

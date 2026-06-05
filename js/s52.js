@@ -6,6 +6,10 @@
 // of the conditional symbology procedures (CS) that matter most visually
 // (depth-area shading, soundings, contours). Unhandled CS fall back to a
 // best-effort default so the chart still renders.
+//
+// 색은 chartsymbols.xml(OpenCPN 인코딩) 로드 후 IHO S-52 PresLib 4.0 표준값
+// (js/s52-preslib-colors.js)으로 덮어써 표준(CARIS 등 ECDIS)과 동일하게 정렬한다.
+import { PRESLIB_COLORS } from "./s52-preslib-colors.js";
 
 class S52 {
   constructor() {
@@ -15,16 +19,19 @@ class S52 {
     this.lineStyles = new Map();
     this.patterns = new Map();
     this.currentTable = "DAY_BRIGHT";
-    // mariner-selectable depth contours (metres) used by SEABED/DEPARE
+    // mariner-selectable depth contours (metres) used by SEABED/DEPARE.
+    // 기본을 깊게(안전 30·깊은 50) 잡아 연안의 적당히 깊은 물이 파랑(DEPMS)으로 유지되게 한다
+    // (얕은 10/20이면 10–20m 물까지 DEPMD 연녹으로 칠해져 "녹색 과다"로 보임). 일반 ECDIS 관행.
     this.shallow = 2;
-    this.safety = 10;
-    this.deep = 20;
+    this.safety = 30;
+    this.deep = 50;
   }
 
   async load(xmlUrl) {
     const txt = await (await fetch(xmlUrl)).text();
     const doc = new DOMParser().parseFromString(txt, "application/xml");
     this._parseColors(doc);
+    this._applyPreslibColors(); // OpenCPN 색 → IHO PresLib 4.0 표준값으로 정렬
     this._parseLookups(doc);
     this._parseSymbols(doc);
     this._parseLines(doc);
@@ -41,6 +48,16 @@ class S52 {
         ]);
       }
       this.colorTables.set(name, map);
+    }
+  }
+
+  /** chartsymbols.xml(OpenCPN)의 색을 IHO S-52 PresLib 4.0 표준값으로 덮어쓴다(토큰별 RGB). */
+  _applyPreslibColors() {
+    for (const pal in PRESLIB_COLORS) {
+      let ct = this.colorTables.get(pal);
+      if (!ct) { ct = new Map(); this.colorTables.set(pal, ct); }
+      const m = PRESLIB_COLORS[pal];
+      for (const tok in m) ct.set(tok, m[tok]);
     }
   }
 

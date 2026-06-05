@@ -16,6 +16,9 @@
   const DISP = { Displaybase: "base", Standard: "standard", Other: "other" };
   // 타일 서버 베이스 URL(meta). 비우면 동일 출처(로컬 serve.js); 별도 서버면 그 절대 URL.
   const TILE_BASE = (document.querySelector('meta[name="enc-tile-base"]')?.content || "").trim().replace(/\/+$/, "");
+  // 스타일 버전 — 렌더(색·심볼·사운딩 등)가 바뀔 때마다 올린다. 타일 URL에 붙여 브라우저/CDN의
+  // 옛 타일 캐시를 무효화한다(서버 응답이 immutable이라 URL이 그대로면 옛 타일이 계속 보임).
+  const STYLE_VERSION = "4"; // 4 = 소축척 항행보조·수심 솎기 강화 / 3 = 등고선30·50+PresLib색+사운딩표기
 
   function enableTiles(app) {
     if (typeof ol === "undefined") { console.warn("tile-mercator: OpenLayers(ol) 미로드"); return; }
@@ -26,7 +29,7 @@
     const tileUrl = () => {
       const p = PAL[renderer.s52.currentTable] || "day";
       const d = DISP[renderer.minDisplayCat] || "standard";
-      return `${TILE_BASE}/tile/{z}/{x}/{y}.png?p=${p}` + (d !== "standard" ? `&disp=${d}` : "");
+      return `${TILE_BASE}/tile/{z}/{x}/{y}.png?p=${p}&sv=${STYLE_VERSION}` + (d !== "standard" ? `&disp=${d}` : "");
     };
     // crossOrigin: 외부 타일 서버 텍스처를 OL 캔버스/WebGL이 쓸 수 있게(서버는 ACAO:* 응답)
     // transition:0 — 줌 중 타일이 매번 페이드-인하면 깜빡임처럼 보이므로 페이드 끔(즉시 표시).
@@ -38,8 +41,11 @@
     const olDiv = document.createElement("div"); olDiv.id = "olmap";
     stage.insertBefore(olDiv, chart);
     const view = new ol.View({ center: [0, 0], zoom: 2, enableRotation: false, constrainResolution: false, multiWorld: false });
-    // preload: 줌 시 새 레벨 타일이 로드되기 전까지 하위 줌 타일을 계속 그려 빈 프레임(깜빡임) 방지.
-    const map = new ol.Map({ target: olDiv, layers: [new ol.layer.Tile({ source: encTiles, preload: 6 })], controls: [], interactions: [], view });
+    // preload: 줌아웃 시 한 단계 상위(거친) 타일을 미리 받아 빈 프레임(깜빡임)을 줄인다.
+    // 단, 값이 크면(과거 6) 한 화면에 하위 6개 줌레벨(z9~14)까지 한꺼번에 요청해 — 정작 필요한
+    // 현재 레벨 타일이 브라우저의 출처당 6연결 한계에 막혀 ~300ms씩 큐에서 대기(=체감 "갱신 느림").
+    // 그래서 1로 둔다: 깜빡임 방지용 1단계 쿠션은 유지하되 깊은 피라미드 요청은 제거. (즉시표시는 transition:0)
+    const map = new ol.Map({ target: olDiv, layers: [new ol.layer.Tile({ source: encTiles, preload: 1 })], controls: [], interactions: [], view });
     window.encMap = map;
     const onResize = () => map.updateSize();
     window.addEventListener("resize", onResize);
@@ -47,6 +53,9 @@
 
     // OL z18 타일 해상도(이보다 더 확대하면 타일이 없음) — 동기화 시 이 아래로 안 내려가게 클램프
     const MIN_RES = (2 * Math.PI * R) / (256 * Math.pow(2, 18));
+    // vp 줌인 상한 = z18에 해당하는 scale. 이보다 더 확대하면 OL은 z18에 멈추고 vp만 깊어져
+    // 팬이 어긋나므로(드래그해도 화면이 일부만 이동), 사용자 줌을 여기서 막는다(render.js clampScaleForUserZoom).
+    vp.tileMaxScale = R / MIN_RES;
     let lastTable = null, lastDisp = null, lastKey = "", lastShow = null;
     function frame() {
       try {

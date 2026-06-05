@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>S-52 ENC Viewer</title>
+<title>S-57 뷰어</title>
 <!-- 타일 서버 주소. 비워두면 동일 출처(로컬 serve.js). 별도 타일 서버 배포 시 그 URL 입력
      (예: content="https://s52-tiles.onrender.com"). 빈 값이면 /tile 프로브 실패 → 벡터 폴백. -->
 <meta name="enc-tile-base" content="" />
@@ -313,7 +313,7 @@
 </head>
 <body class="sidebar-collapsed">
   <div id="toolbar">
-    <h1 class="app-logo" tabindex="0" role="button" aria-label="캡처용 화면으로 이동" title="캡처용 화면(부산항·가덕도 일대)으로 이동">S-52 ENC Viewer</h1>
+    <h1 class="app-logo" tabindex="0" role="button" aria-label="캡처용 화면으로 이동" title="캡처용 화면(부산항·가덕도 일대)으로 이동">S-57 뷰어</h1>
     <a href="about.html" class="doc-page">프로그램 설명</a>
     <span id="focused-cell" title="지도에서 마지막으로 포커스한 ENC 셀(.000)"></span>
     <span id="open-enc">
@@ -338,11 +338,6 @@
       </button>
     </label>
     <label><input type="checkbox" id="grid" /> 셀 격자</label>
-    <label>배경:
-      <button type="button" class="toolbar-cycle" id="basemap" value="chart" title="클릭하여 배경 순환: 해도 ↔ 위성. (육지에만 오버레이, 바다는 S-52 차트 유지)">
-        <span class="cycle-text">해도</span><span class="cycle-icon" aria-hidden="true">↻</span>
-      </button>
-    </label>
     <label><input type="checkbox" id="sidebarVisible" /> 셀 목록(좌측)</label>
   </div>
   <div id="main">
@@ -399,13 +394,13 @@
   </div>
   <div id="status-bar">
     <div id="status">초기화 중…</div>
-    <h1 class="mobile-app-title app-logo" tabindex="0" role="button" aria-label="캡처용 화면으로 이동" title="캡처용 화면(부산항·가덕도 일대)으로 이동">S-52 ENC Viewer</h1>
+    <h1 class="mobile-app-title app-logo" tabindex="0" role="button" aria-label="캡처용 화면으로 이동" title="캡처용 화면(부산항·가덕도 일대)으로 이동">S-57 뷰어</h1>
     <a href="about.html" class="doc-page doc-page-mobile">프로그램 설명</a>
     <div id="app-credit">제작: 지엠티 김길용 수석 · v0.3.1 (2026.06.04)</div>
   </div>
   <div id="map-loading" hidden>로딩 중…</div>
   <script src="vendor/ol.js"></script>
-  <script type="module" src="js/main.js?v=138"></script>
-  <script src="js/tile-mercator.js?v=5"></script>
+  <script type="module" src="js/main.js?v=143"></script>
+  <script src="js/tile-mercator.js?v=10"></script>
 </body>
 </html>

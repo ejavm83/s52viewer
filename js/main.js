@@ -1,8 +1,8 @@
 import { DDF } from "./iso8211.js";
 import { S57 } from "./s57.js";
-import { S52 } from "./s52.js?v=5";
+import { S52 } from "./s52.js?v=7";
 import { loadCatalog } from "./catalog.js";
-import { Renderer } from "./render.js?v=102";
+import { Renderer } from "./render.js?v=105";
 
 const ATLAS_BY_TABLE = {
   DAY_BRIGHT: "assets/rastersymbols-day.png",
@@ -199,12 +199,6 @@ async function init() {
   state.renderer = new Renderer(canvas, state.s52, state.atlas.DAY_BRIGHT);
   // 3D 지구본 대륙 데이터 비동기 로드 완료 시 자동 재렌더링
   state.renderer.onWorldLandReady = () => { if (state.fitted) draw(); };
-  // 위성 타일 도착 시 재렌더링(여러 타일이 잇따라 오므로 rAF로 한 프레임에 모음)
-  let _satRaf = 0;
-  state.renderer.onSatelliteTileReady = () => {
-    if (_satRaf) return;
-    _satRaf = requestAnimationFrame(() => { _satRaf = 0; draw(); });
-  };
   // 모드 전환 크로스페이드 중 매 프레임 다시 그리도록 콜백 — Renderer가 진행 중인 transition 알려옴
   state.renderer.onTransitionFrame = () => requestAnimationFrame(() => draw());
 
@@ -224,9 +218,8 @@ async function init() {
   await waitForNonemptyCanvas();
   syncCanvasPixelSizeFromContainer();
   // 줌아웃 하한(zoomOutMinScale)을 먼저 전역(globalBounds) 오버뷰 기준으로 정한다.
-  // 지역 뷰로 시작하면서 이 단계를 빼면 하한이 '지역 시작 scale'(큼)에 묶여, 특히 위성 모드
-  // (auto3D=false라 globe 임계 완화가 없음)에서 축소가 아예 막힌다. applyZoomOutLimitAfterFit은
-  // Math.min이라, 전역으로 한 번 잡아두면 이후 지역 fit이 하한을 올리지 않는다.
+  // 지역 뷰로 시작하면서 이 단계를 빼면 하한이 '지역 시작 scale'(큼)에 묶일 수 있다.
+  // applyZoomOutLimitAfterFit은 Math.min이라, 전역으로 한 번 잡아두면 이후 지역 fit이 하한을 올리지 않는다.
   state.renderer.vp.fit(state.globalBounds);
   clampVpScaleForEncOverview(idx);
   state.renderer.vp.applyZoomOutLimitAfterFit();
@@ -1307,35 +1300,6 @@ wireToolbarCycle("dispcat", DISPCAT_CYCLE_OPTIONS, (v) => {
     state.renderer.setTilt(deg);
   });
 })();
-// 위성지도(육지) 오버레이 토글
-/**
- * 위성/지도 타일은 평면(머케이터)에서만 그려진다(3D 지구본은 orthographic이라 타일 미지원).
- * 따라서 둘 중 하나라도 켜지면 자동 지구본 전환을 끄고 평면을 유지한다. 둘 다 끄면 복구.
- */
-function syncAuto3DForTileOverlays() {
-  const vp = state.renderer.vp;
-  const tilesOn = state.renderer.showSatellite;
-  if (tilesOn) {
-    if (vp.mode === "globe") vp.exitGlobe();   // 평면으로 즉시 복귀
-    vp.auto3D = false;
-  } else {
-    const cb = document.getElementById("globe3d");
-    vp.auto3D = cb ? cb.checked : true;        // 3D 지구본 토글 상태 복원
-    vp.syncAutoMode();
-  }
-}
-// 배경 순환 — 해도(차트만) ↔ 위성. 한 컨트롤로 회전.
-//  chart : 오버레이 없음 (S-52 차트만)
-//  sat   : 육지에 위성 영상(Esri World Imagery)
-const BASEMAP_CYCLE_OPTIONS = [
-  { value: "chart", label: "해도" },
-  { value: "sat", label: "위성" },
-];
-wireToolbarCycle("basemap", BASEMAP_CYCLE_OPTIONS, (v) => {
-  state.renderer.showSatellite = (v === "sat");
-  syncAuto3DForTileOverlays();
-  draw();
-});
 document.getElementById("grid").addEventListener("change", (e) => {
   state.renderer.showGrid = e.target.checked;
   if (e.target.checked) state.renderer.invalidateEncBoundaryResIfStale();

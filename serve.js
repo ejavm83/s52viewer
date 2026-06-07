@@ -10,6 +10,7 @@ import { mkdir, writeFile, readFile as readFileP } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildCellIndex, listEncCellNames } from "./lib/cell-index.mjs";
+import { tileSettings, settingsKey } from "./lib/tile-settings.mjs";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_PORT = 8000;
@@ -92,28 +93,8 @@ function releaseTileRenderSlot() {
   if (next) next();
 }
 
-// 쿼리스트링 → S-52 설정. 기본값은 예열된 'day' 타일과 일치(palette day, 표시 standard,
-// 등고선 2/10/20, SCAMIN on)하도록 잡아, 기본 요청은 디스크 캐시를 그대로 쓴다.
-function tileSettings(q) {
-  const g = (re) => { const m = q.match(re); return m ? m[1] : null; };
-  const num = (re, d) => { const v = g(re); return v != null ? +v : d; };
-  return {
-    palette: g(/(?:^|&)p=(day|dusk|night)/) || g(/(?:^|&)t=(day|dusk|night)/) || "day",
-    display: g(/(?:^|&)disp=(base|standard|other)/) || "standard",
-    shallow: num(/(?:^|&)shallow=(\d+(?:\.\d+)?)/, 2),
-    safety: num(/(?:^|&)safety=(\d+(?:\.\d+)?)/, 30),
-    deep: num(/(?:^|&)deep=(\d+(?:\.\d+)?)/, 50),
-    scamin: !/(?:^|&)scamin=0/.test(q),
-  };
-}
-function settingsKey(s) {
-  let k = s.palette;
-  const x = [];
-  if (s.display !== "standard") x.push(s.display);
-  if (!(s.shallow === 2 && s.safety === 30 && s.deep === 50)) x.push(`c${s.shallow}-${s.safety}-${s.deep}`);
-  if (!s.scamin) x.push("nsc");
-  return x.length ? `${k}__${x.join("_")}` : k;
-}
+// tileSettings(쿼리→설정) · settingsKey(설정→캐시 폴더키)는 lib/tile-settings.mjs로 공용화
+// (serve.js와 scripts/prerender-coverage.mjs가 동일 규칙을 쓰도록).
 
 async function getTilePng(z, x, y, settings) {
   const key = settingsKey(settings);

@@ -10,6 +10,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { renderTile, lonLatToTile } from "../lib/render-tile.mjs";
 import { buildCellIndex } from "../lib/cell-index.mjs";
+import { settingsKey } from "../lib/tile-settings.mjs";
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const TILE_DIR = path.join(root, "tiles");
@@ -18,7 +19,8 @@ const dry = args.includes("--dry");
 const force = args.includes("--force"); // 기존 타일을 건너뛰지 않고 덮어쓴다(스타일 변경 후 재예열용)
 const dispI = args.indexOf("--disp");   // 표시범주(기본 standard). other/base는 serve.js와 동일하게 별도 폴더로 예열.
 const disp = dispI >= 0 ? args[dispI + 1] : "standard";
-const subdir = disp && disp !== "standard" ? `day__${disp}` : "day"; // = serve.js settingsKey(기본 팔레트·등고선·scamin)
+// 캐시 폴더 키는 serve.js와 동일 규칙(공용 settingsKey). 기본 팔레트·등고선·scamin 가정.
+const subdir = settingsKey({ palette: "day", display: disp, shallow: 2, safety: 30, deep: 50, scamin: true });
 const nums = args.filter((a) => /^\d+$/.test(a)).map(Number);
 const [zMin, zMax] = nums.length >= 2 ? nums : [6, 13];
 // optional lon band filter (for parallel sharding): --lon <min> <max> keeps only
